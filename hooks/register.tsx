@@ -1,0 +1,644 @@
+import { atom, read, update } from 'claude-code'
+import type { EngineInterface, Register, RenderElement } from 'claude-code'
+
+import type { EmberFocus, EmberGesture, EmberMood, EmberPhase } from '../types'
+import { caption, face, portrait } from './creature'
+import { clip, narrate, span, stopwatch } from './narrate'
+
+const PANE = 'ember'
+const CHIME = 'fx/chime.wav'
+const WIN = 'fx/win.wav'
+
+const WORK = '#E8912D'
+const YOU = '#FF5D73'
+const READY = '#3FB68B'
+const CHEER = '#E8B931'
+
+// A turn shorter than this ended while he was still looking at it: no chime.
+const CHIME_AFTER_MS = 20_000
+// How long a question or permission prompt may sit before the chime calls him back.
+const KNOCK_AFTER_MS = 10_000
+// The engine says when a permission prompt opens, never when it is answered:
+// past this the creature stops insisting, so an approved long command is not
+// drawn as waiting on him for its whole run.
+const BLOCK_DECAY_MS = 40_000
+const CHEER_MS = 4500
+const PARKED_MAX = 50
+// How long his move may stand before one chime asks whether he is still there.
+const NUDGE_AFTER_MS = 5 * 60_000
+// A prompt shorter than this ("yes", "do it") is a reply, never a new task: not judged.
+const JUDGE_MIN_CHARS = 24
+const JUDGE = [
+  'You judge whether a new request to a coding assistant still belongs to the task its author said they are focused on.',
+  'Reply with one word.',
+  'SAME: the request works toward the focus, follows up on it, asks about it, fixes or tests it, or could plausibly be part of it.',
+  'DIFFERENT: it clearly starts unrelated work.',
+  'When unsure, reply SAME.',
+].join(' ')
+
+// Prompts nobody typed: they start turns, but they are not what he asked for.
+const MACHINE = new Set([
+  'task-notification',
+  'scheduled-trigger',
+  'peer',
+  'peer-send-message',
+  'projects-relay',
+  'channel',
+  'coordinator',
+  'observer',
+  'observer-activity',
+  'auto-continuation',
+  'plugin',
+])
+
+const feel = (phase: EmberPhase, gesture: EmberGesture): EmberMood => ({ phase, gesture })
+
+const mood = atom({ plugin: 'ember', key: 'mood' } as const, feel('rest', 'think'))
+const live = atom({ plugin: 'ember', key: 'live' } as const, { label: '', since: 0, tools: 0 })
+const focus = atom({ plugin: 'ember', key: 'focus' } as const, null)
+const ask = atom({ plugin: 'ember', key: 'ask' } as const, '')
+const parked = atom({ plugin: 'ember', key: 'parked' } as const, [])
+const isMuted = atom({ plugin: 'ember', key: 'isMuted' } as const, false)
+const isClosed = atom({ plugin: 'ember', key: 'isClosed' } as const, false)
+const isBusy = atom({ plugin: 'ember', key: 'isBusy' } as const, false)
+const isDrifting = atom({ plugin: 'ember', key: 'isDrifting' } as const, false)
+const now = atom({ plugin: 'ember', key: 'now' } as const, 0)
+
+/** The flame grows the longer he stays on the one thing. */
+const heatOf = (current: EmberMood, held: EmberFocus | null): number => {
+  if (current.phase === 'rest') {
+    return 0
+  }
+
+  if (held === null || held.turns < 2) {
+    return 1
+  }
+
+  return held.turns < 5 ? 2 : 3
+}
+
+const plural = (count: number, word: string): string => `${count} ${word}${count === 1 ? '' : 's'}`
+
+const sound = async ($: EngineInterface, asset: string): Promise<void> => {
+  if (await read($, isMuted)) {
+    return
+  }
+
+  await $.audio.play({ asset }, { gain: 0.6 }).catch(() => undefined)
+}
+
+const toggleSound = async ($: EngineInterface, to?: boolean): Promise<boolean> => {
+  const muted = await update($, isMuted, was => to ?? !was)
+  await $.store.set('isMuted', muted)
+
+  return muted
+}
+
+const keepParked = async ($: EngineInterface, change: (list: string[]) => string[]): Promise<string[]> => {
+  const list = await update($, parked, change)
+  await $.store.set('parked', list)
+
+  return list
+}
+
+const setFocus = async ($: EngineInterface, text: string): Promise<void> => {
+  const thing = clip(text, 120)
+
+  if (thing === '') {
+    return
+  }
+
+  const at = await $.clock.now()
+  await update($, now, () => at)
+  await update($, focus, () => ({ text: thing, startedAt: at, turns: 0 }))
+  await update($, isDrifting, () => false)
+
+  // Setting a focus wakes it: from asleep to looking at him. No turn ended, so there is nothing to nudge about.
+  if ((await read($, mood)).phase === 'rest') {
+    await update($, live, held => ({ ...held, label: '', since: at, isNudged: true }))
+    await update($, mood, () => feel('done', 'think'))
+  }
+}
+
+const finishFocus = async ($: EngineInterface): Promise<string> => {
+  const held = await read($, focus)
+
+  if (held === null) {
+    return 'No focus set. `/ember <the one thing>` sets one.'
+  }
+
+  const at = await $.clock.now()
+  const line = `Done: ${held.text} (${span(at - held.startedAt)}, ${plural(held.turns, 'turn')})`
+
+  await update($, focus, () => null)
+  await update($, isDrifting, () => false)
+  await update($, mood, was => feel('cheer', was.gesture))
+  void sound($, WIN)
+  $.ui.toast(`★ ${line}`, { timeoutMs: 6000 })
+
+  $.clock.after(CHEER_MS, () => {
+    void (async () => {
+      const isTurn = await read($, isBusy)
+      await update($, mood, was => (was.phase === 'cheer' ? feel(isTurn ? 'work' : 'done', 'think') : was))
+    })()
+  })
+
+  return line
+}
+
+const promote = async ($: EngineInterface, thought: string): Promise<void> => {
+  await keepParked($, list => list.filter(one => one !== thought))
+  await setFocus($, thought)
+}
+
+// Main-loop tool calls in flight, and which wait on him is the newest. A
+// reload starts both over, which a turn's start and end do too.
+let running = 0
+let waits = 0
+// Which typed prompt is the newest: a verdict on an older one is dropped.
+let asks = 0
+
+/** One small model call per typed prompt while a focus is set: is this still the one thing? */
+const judge = async ($: EngineInterface, asked: string, id: number): Promise<void> => {
+  const held = await read($, focus)
+
+  if (held === null) {
+    return
+  }
+
+  const reply = await $.model
+    .complete({
+      model: 'haiku',
+      system: JUDGE,
+      prompt: `FOCUS: ${held.text}\nREQUEST: ${clip(asked, 600)}`,
+      maxTokens: 8,
+      effort: 'low',
+      timeoutMs: 8000,
+    })
+    .catch(() => undefined)
+  const isOff = reply?.isAnswered === true && /^\W*different/i.test(reply.text)
+
+  // No verdict is no doubt: a failed or slow call never flags a prompt.
+  if (!isOff || id !== asks) {
+    return
+  }
+
+  await update($, isDrifting, () => true)
+  $.ui.toast(`Side quest? Still on: ${clip(held.text, 50)}. /park it for later.`, { timeoutMs: 7000 })
+}
+
+/** His move has stood a while: one chime, once, then quiet until the next turn ends. */
+const nudge = async ($: EngineInterface, at: number): Promise<void> => {
+  const step = await read($, live)
+
+  if (step.isNudged === true || at - step.since < NUDGE_AFTER_MS) {
+    return
+  }
+
+  await update($, live, held => ({ ...held, isNudged: true }))
+
+  const held = await read($, focus)
+  const waited = `Claude finished ${span(at - step.since)} ago.`
+
+  $.ui.toast(held === null ? `${waited} Your move.` : `Still on: ${clip(held.text, 50)}? ${waited}`, { timeoutMs: 8000 })
+  void sound($, CHIME)
+}
+
+/** Claude cannot go on without him: say so now, chime if it stands. */
+const block = async ($: EngineInterface, label: string, isDecaying: boolean): Promise<void> => {
+  if (!(await read($, isBusy))) {
+    return
+  }
+
+  waits += 1
+  const wait = waits
+  const isStanding = async () => wait === waits && (await read($, mood)).phase === 'blocked'
+
+  await update($, live, held => ({ ...held, label }))
+  await update($, mood, was => (was.phase === 'cheer' ? was : feel('blocked', was.gesture)))
+
+  $.clock.after(KNOCK_AFTER_MS, () => {
+    void (async () => {
+      if (await isStanding()) {
+        await sound($, CHIME)
+      }
+    })()
+  })
+
+  if (isDecaying) {
+    $.clock.after(BLOCK_DECAY_MS, () => {
+      void (async () => {
+        if (await isStanding()) {
+          await update($, mood, was => feel('work', was.gesture))
+        }
+      })()
+    })
+  }
+}
+
+/** A call came back: he answered whatever it waited on, and with none left Claude is thinking. */
+const settle = async ($: EngineInterface): Promise<void> => {
+  const isIdle = running === 0
+  const was = await read($, mood)
+
+  if (was.phase !== 'work' && was.phase !== 'blocked') {
+    return
+  }
+
+  if (was.phase === 'blocked' || (isIdle && was.gesture !== 'think')) {
+    await update($, mood, held => feel('work', isIdle ? 'think' : held.gesture))
+  }
+
+  if (isIdle) {
+    await update($, live, held => ({ ...held, label: 'Thinking' }))
+  }
+}
+
+const tick = async ($: EngineInterface): Promise<void> => {
+  const at = await $.clock.now()
+  const { phase } = await read($, mood)
+
+  // Seconds matter while a turn runs; standing still, minutes do.
+  if (phase !== 'work' && phase !== 'blocked' && Math.floor(at / 1000) % 15 !== 0) {
+    return
+  }
+
+  await update($, now, () => at)
+
+  if (phase === 'done') {
+    await nudge($, at)
+  }
+}
+
+const open = ($: EngineInterface) => $.ui.open({ id: PANE, title: 'Ember' })
+
+export const register: Register = on => {
+  on('session.start', async ($, e, next) => {
+    await $.command
+      .register({
+        name: 'ember',
+        description: 'Set the one thing you are doing, or open your focus companion',
+        argumentHint: '[the one thing | done | drop | mute]',
+        immediate: true,
+      })
+      .catch(() => $.ui.log('could not register /ember', { to: 'debug' }))
+    await $.command
+      .register({
+        name: 'park',
+        description: 'Park a stray thought for later without derailing the work',
+        argumentHint: '[thought | clear]',
+        immediate: true,
+      })
+      .catch(() => $.ui.log('could not register /park', { to: 'debug' }))
+
+    const kept = await $.store.get('parked')
+    const wasMuted = (await $.store.get('isMuted')) === true
+
+    if (Array.isArray(kept)) {
+      await update($, parked, () => kept.filter((one): one is string => typeof one === 'string'))
+    }
+
+    await update($, isMuted, () => wasMuted)
+    // A reload drops the timer that ends a cheer.
+    await update($, mood, was => (was.phase === 'cheer' ? feel('done', 'think') : was))
+
+    $.clock.every(1000, () => {
+      void tick($)
+    })
+
+    if (e.isInteractive && !(await read($, isClosed))) {
+      void open($)
+        .then(placed => {
+          if (!placed.isPlaced) {
+            $.ui.toast('Ember is here: /ember opens it')
+          }
+        })
+        .catch(() => undefined)
+    }
+
+    return next(e)
+  })
+
+  on('ui.close', { id: PANE }, async ($, e, next) => {
+    if (e.origin.kind === 'person') {
+      await update($, isClosed, () => true)
+    }
+
+    return next(e)
+  })
+
+  on('command.run', { command: 'ember' }, async ($, e) => {
+    const args = e.args.trim()
+    const word = args.toLowerCase()
+
+    if (word === 'done') {
+      return { text: await finishFocus($) }
+    }
+
+    if (word === 'drop') {
+      await update($, focus, () => null)
+      await update($, isDrifting, () => false)
+
+      return { text: 'Focus dropped.' }
+    }
+
+    if (word === 'mute' || word === 'unmute') {
+      const muted = await toggleSound($, word === 'mute')
+
+      return { text: muted ? 'Ember is muted.' : 'Ember chimes when it is your move.' }
+    }
+
+    await setFocus($, args)
+    await update($, isClosed, () => false)
+    await open($)
+
+    const held = await read($, focus)
+
+    return {
+      text:
+        held === null
+          ? 'Ember is open. `/ember <the one thing>` sets your focus, `/park <thought>` saves a stray one.'
+          : args === ''
+            ? `Ember is open. Still on: ${held.text}`
+            : `Locked in: ${held.text}`,
+    }
+  })
+
+  on('command.run', { command: 'park' }, async ($, e) => {
+    const thought = e.args.trim()
+
+    if (thought === '') {
+      const list = await read($, parked)
+
+      return {
+        text:
+          list.length === 0
+            ? 'Nothing parked. `/park <thought>` saves one for later.'
+            : list.map((one, index) => `${index + 1}. ${one}`).join('\n'),
+      }
+    }
+
+    if (thought.toLowerCase() === 'clear') {
+      await keepParked($, () => [])
+
+      return { text: 'Parking lot cleared.' }
+    }
+
+    const list = await keepParked($, held => [...held, clip(thought, 200)].slice(-PARKED_MAX))
+    $.ui.toast(`Parked: ${clip(thought, 60)}. Back to it.`)
+
+    // The thought itself stays out of the row the model reads: parking it must not start it.
+    return { text: `Parked (${list.length}).` }
+  })
+
+  on('prompt.submit', async ($, e, next) => {
+    if (!MACHINE.has(e.origin.kind) && !e.text.startsWith('/')) {
+      const { text } = e
+      asks += 1
+      const id = asks
+
+      await update($, ask, () => clip(text, 160))
+
+      // Each typed prompt is judged afresh, off the dispatch so the prompt never waits on it.
+      if (await read($, isDrifting)) {
+        await update($, isDrifting, () => false)
+      }
+
+      if (text.trim().length >= JUDGE_MIN_CHARS && (await read($, focus)) !== null) {
+        $.clock.after(1, () => {
+          void judge($, text, id)
+        })
+      }
+    }
+
+    return next(e)
+  })
+
+  on('turn.start', async ($, e, next) => {
+    const at = await $.clock.now()
+    running = 0
+    waits += 1
+
+    await update($, isBusy, () => true)
+    await update($, now, () => at)
+    await update($, live, () => ({ label: 'Thinking', since: at, tools: 0 }))
+    await update($, mood, was => (was.phase === 'cheer' ? was : feel('work', 'think')))
+
+    return next(e)
+  })
+
+  on('tool.call', async ($, e, next) => {
+    const said = narrate(e.tool, e as unknown as Readonly<Record<string, unknown>>)
+    const isTurn = await read($, isBusy)
+
+    // A subagent's step is narrated, the creature keeps watching the main loop.
+    if (e.agentId !== undefined) {
+      if (isTurn) {
+        await update($, live, held => ({ ...held, label: `↳ ${said.label}`, tools: held.tools + 1 }))
+      }
+
+      try {
+        return await next(e)
+      } finally {
+        // Its call came back, so nothing of its waits on him; the main loop's label is not its to reset.
+        if ((await read($, mood)).phase === 'blocked') {
+          await update($, mood, was => (was.phase === 'blocked' ? feel('work', was.gesture) : was))
+        }
+      }
+    }
+
+    running += 1
+
+    if (isTurn) {
+      await update($, live, held => ({ ...held, label: said.label, tools: held.tools + 1 }))
+      await update($, mood, was => (was.phase === 'cheer' ? was : feel('work', said.gesture)))
+    }
+
+    if (e.tool === 'AskUserQuestion') {
+      await block($, 'Claude has a question for you', false)
+    }
+
+    try {
+      return await next(e)
+    } finally {
+      running = Math.max(0, running - 1)
+      await settle($)
+    }
+  })
+
+  on('classic.PermissionRequest', async ($, e, next) => {
+    const answered = await next(e)
+
+    // A settings hook that decided it leaves no dialog for him to answer.
+    if (answered.decision === undefined) {
+      await block($, clip(`Needs your OK: ${e.tool_name}`), true)
+    }
+
+    return answered
+  })
+
+  on('turn.complete', async ($, e, next) => {
+    if (e.agentId !== undefined) {
+      return next(e)
+    }
+
+    const at = await $.clock.now()
+    running = 0
+    waits += 1
+
+    // A side quest does not feed the flame.
+    if (e.reason === 'answer' && !(await read($, isDrifting))) {
+      await update($, focus, held => (held === null ? held : { ...held, turns: held.turns + 1 }))
+    }
+
+    await update($, isBusy, () => false)
+    await update($, now, () => at)
+    await update($, live, held => ({ ...held, label: '', since: at, isNudged: false }))
+    await update($, mood, was => (was.phase === 'cheer' ? was : feel('done', 'think')))
+
+    if (!e.isAborted && e.durationMs >= CHIME_AFTER_MS) {
+      void sound($, CHIME)
+    }
+
+    return next(e)
+  })
+
+  // The anchor: what he is doing, what Claude is doing, whose move it is.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const current = await read($, mood)
+    const held = await read($, focus)
+    const asked = await read($, ask)
+    const isQuiet = e.props.hasSurvey || (current.phase === 'rest' && held === null)
+
+    if (isQuiet) {
+      return next(e)
+    }
+
+    const step = await read($, live)
+    const at = await read($, now)
+    const lot = await read($, parked)
+    const isOff = held !== null && current.phase !== 'cheer' && (await read($, isDrifting))
+    const elapsed = Math.max(0, at - step.since)
+    const { Box, Text } = $.ui.resolve(e)
+
+    const status = {
+      rest: { color: READY, head: '○ Ready', tail: '' },
+      work: {
+        color: WORK,
+        head: `● ${step.label || 'Working'}`,
+        tail: `${plural(step.tools, 'step')} · ${stopwatch(elapsed)}`,
+      },
+      blocked: { color: YOU, head: `▲ ${step.label || 'Claude needs you'}`, tail: stopwatch(elapsed) },
+      done: { color: READY, head: '◆ Your move', tail: elapsed >= 60_000 ? span(elapsed) : '' },
+      cheer: { color: CHEER, head: '★ Done. Nice.', tail: '' },
+    }[current.phase]
+
+    const goal = held?.text ?? asked
+    const onIt = held !== null && at - held.startedAt >= 60_000 ? span(at - held.startedAt) : ''
+    const taken = status.head.length + status.tail.length + onIt.length + (isOff ? 38 : 22)
+    const room = Math.max(16, e.props.bodyColumns - taken)
+
+    return (
+      <Box flexDirection="row" columnGap={2}>
+        {goal !== '' && (
+          <Text bold={held !== null} dimColor={held === null} wrap="truncate-end">
+            {held === null ? 'You asked: ' : '▸ '}
+            {clip(goal, room)}
+          </Text>
+        )}
+        {onIt !== '' && <Text dimColor>{onIt}</Text>}
+        {isOff && (
+          <Text color={YOU} bold>
+            ↯ Side quest?
+          </Text>
+        )}
+        <Text color={status.color} bold>
+          {status.head}
+        </Text>
+        {status.tail !== '' && <Text dimColor>{status.tail}</Text>}
+        {lot.length > 0 && <Text dimColor>{lot.length} parked</Text>}
+      </Box>
+    )
+  })
+
+  // The companion. It reads the mood and never the clock, so its animation is
+  // redrawn when the creature changes and at no other time.
+  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+    const current = await read($, mood)
+    const held = await read($, focus)
+    const lot = await read($, parked)
+    const muted = await read($, isMuted)
+    const look = { ...current, heat: heatOf(current, held), isDrifting: held !== null && (await read($, isDrifting)) }
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const width = Math.max(120, Math.min(220, e.props.bodyColumns * 7))
+
+    let creature: RenderElement
+    let entry: RenderElement
+
+    if (e.surface === 'terminal') {
+      const shown = face(look)
+      creature = (
+        <Text color={shown.color} bold>
+          {shown.text}
+        </Text>
+      )
+    } else {
+      const { Svg } = $.ui.resolve(e)
+      creature = (
+        <Svg
+          source={portrait(look, width)}
+          alt={`Ember, a small flame. ${caption(look)}`}
+          width={width}
+          height={Math.round(width * 0.9)}
+          isInteractive
+        />
+      )
+    }
+
+    if (e.surface === 'mobile') {
+      entry = <Text dimColor>/ember &lt;the one thing&gt; sets your focus</Text>
+    } else {
+      const { Input } = $.ui.resolve(e)
+      entry = (
+        <Input
+          key="one-thing"
+          placeholder="What's the one thing?"
+          submitLabel="lock in"
+          onSubmit={value => setFocus($, value)}
+        />
+      )
+    }
+
+    return (
+      <Box flexDirection="column" alignItems="center" rowGap={1} paddingX={1}>
+        {creature}
+        <Text dimColor>{caption(look)}</Text>
+        {held === null ? (
+          entry
+        ) : (
+          <Box flexDirection="column" alignItems="center">
+            <Text bold wrap="wrap">
+              {held.text}
+            </Text>
+            <Text dimColor>{held.turns === 0 ? 'just lit' : `${plural(held.turns, 'turn')} on it`}</Text>
+            <Button key="done" variant="primary" label="Done" onPress={() => finishFocus($)} />
+          </Box>
+        )}
+        {lot.length > 0 && (
+          <Box flexDirection="column" alignItems="center">
+            <Text dimColor>Parked. Press one to make it the focus.</Text>
+            {lot.slice(-4).map((thought, index) => (
+              <Button key={`parked-${index}`} label={clip(thought, 40)} dimColor onPress={() => promote($, thought)} />
+            ))}
+          </Box>
+        )}
+        <Button
+          key="sound"
+          label={muted ? 'Sound is off' : 'Sound is on'}
+          dimColor
+          onPress={() => toggleSound($)}
+        />
+      </Box>
+    )
+  })
+}

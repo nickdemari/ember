@@ -1,0 +1,9 @@
+{
+  "name": "ember",
+  "version": "0.1.0",
+  "description": "A living focus companion: pins the one thing you're doing, mirrors what Claude is doing, and calls you back when it's your move.",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Nick Demari"
+  }
+}
