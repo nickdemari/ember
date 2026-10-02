@@ -2,17 +2,20 @@
 
 A Claude Code mod that keeps you on the one thing. Built for an ADD brain: a small flame watches Claude work, a band above the prompt says what you asked and whose move it is, and a chime calls you back when you've wandered off.
 
-<p align="center">
-  <img src="docs/rest.svg" width="110" alt="Ember asleep">
-  <img src="docs/think.svg" width="110" alt="Ember while Claude thinks">
-  <img src="docs/write.svg" width="110" alt="Ember while Claude writes">
-  <img src="docs/run.svg" width="110" alt="Ember while Claude runs things">
-  <img src="docs/blocked.svg" width="110" alt="Ember when Claude is waiting on you">
-  <img src="docs/side-quest.svg" width="110" alt="Ember asking whether this is a side quest">
-  <img src="docs/done.svg" width="110" alt="Ember when it is your move">
-  <img src="docs/cheer.svg" width="110" alt="Ember celebrating a finished focus">
-</p>
-<p align="center"><sub>asleep · thinking · writing · running · needs you · side quest? · your move · done</sub></p>
+<table align="center">
+  <tr>
+    <td align="center"><img src="docs/rest.svg" width="120" alt="Ember asleep"><br><sub>asleep</sub></td>
+    <td align="center"><img src="docs/think.svg" width="120" alt="Ember while Claude thinks"><br><sub>thinking</sub></td>
+    <td align="center"><img src="docs/write.svg" width="120" alt="Ember while Claude writes"><br><sub>writing</sub></td>
+    <td align="center"><img src="docs/run.svg" width="120" alt="Ember while Claude runs things"><br><sub>running</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/blocked.svg" width="120" alt="Ember when Claude is waiting on you"><br><sub>needs you</sub></td>
+    <td align="center"><img src="docs/side-quest.svg" width="120" alt="Ember asking whether this is a side quest"><br><sub>side quest?</sub></td>
+    <td align="center"><img src="docs/done.svg" width="120" alt="Ember when it is your move"><br><sub>your move</sub></td>
+    <td align="center"><img src="docs/cheer.svg" width="120" alt="Ember celebrating a finished focus"><br><sub>done</sub></td>
+  </tr>
+</table>
 
 ## What it does
 
