@@ -251,33 +251,29 @@ export const portrait = (look: Look, width: number): string => {
   )
 }
 
-/** The creature where no surface draws an SVG: one line of text and its color. */
-export const face = (look: Look): { text: string; color: string } => {
+// The creature where no surface draws an SVG: a few cells of text, in frames a
+// second apart. Every frame is padded to one width, so nothing beside it moves.
+const FACE_WIDTH = 7
+const FACES = {
+  rest: { color: '#D9532F', frames: ['(˘ᵕ˘) z'] },
+  think: { color: '#F28A3C', frames: ['(•ᴗ•)', '(•ᴗ•)∙', '(•ᴗ•)∙∙'] },
+  read: { color: '#F28A3C', frames: ['(◐ᴗ◐) ▤', '(◑ᴗ◑) ▤'] },
+  write: { color: '#F28A3C', frames: ['(•ᴗ•)✎', '(•ᴗ•) ✎'] },
+  run: { color: '#F28A3C', frames: ['(•ᴗ•)⟳', '(•ᴗ•)⟲'] },
+  blocked: { color: ALERT, frames: ['(°o°)!', '(°O°)!!'] },
+  doubt: { color: DOUBT, frames: ['(•ᴗ•)?'] },
+  done: { color: '#3FB68B', frames: ['(•ᴗ•)/'] },
+  cheer: { color: '#E8B931', frames: ['\\(^▽^)/'] },
+} as const
+
+/** The creature as text and its color; `beat` picks the frame, so a caller that counts seconds animates it. */
+export const face = (look: Look, beat = 0): { text: string; color: string } => {
   const { phase, gesture } = look
+  const mood = isDoubting(look) ? 'doubt' : phase === 'work' ? gesture : phase
+  const { color, frames } = FACES[mood]
+  const frame = frames[Math.abs(Math.floor(beat)) % frames.length] ?? frames[0]
 
-  if (isDoubting(look)) {
-    return { text: '( •ᴗ• ) ?', color: DOUBT }
-  }
-
-  if (phase === 'rest') {
-    return { text: '( ˘ᵕ˘ ) z', color: '#D9532F' }
-  }
-
-  if (phase === 'blocked') {
-    return { text: '( °o° )ノ !', color: ALERT }
-  }
-
-  if (phase === 'done') {
-    return { text: '( •ᴗ• )/', color: '#3FB68B' }
-  }
-
-  if (phase === 'cheer') {
-    return { text: '\\( ^ᗜ^ )/ ✦', color: '#E8B931' }
-  }
-
-  const work = { think: '( •ᴗ• ) ∙∙∙', read: '( ◔ᴗ◔ ) ▤', write: '( •̀ᴗ•́ ) ✎', run: '( •ᴗ• ) ⟳' } as const
-
-  return { text: work[gesture], color: '#F28A3C' }
+  return { text: frame.padEnd(FACE_WIDTH), color }
 }
 
 /** One line under the creature, and what a reader that cannot see it is told. */

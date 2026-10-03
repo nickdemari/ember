@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, RenderElement } from 'claude-code'
+import type { EngineInterface, Register, RenderElement, RenderSurface } from 'claude-code'
 
 import type { EmberFocus, EmberGesture, EmberMood, EmberPhase } from '../types'
 import { caption, face, portrait } from './creature'
@@ -120,7 +120,7 @@ const setFocus = async ($: EngineInterface, text: string): Promise<void> => {
   }
 }
 
-const finishFocus = async ($: EngineInterface): Promise<string> => {
+const finishFocus = async ($: EngineInterface, isSaid = true): Promise<string> => {
   const held = await read($, focus)
 
   if (held === null) {
@@ -134,7 +134,11 @@ const finishFocus = async ($: EngineInterface): Promise<string> => {
   await update($, isDrifting, () => false)
   await update($, mood, was => feel('cheer', was.gesture))
   void sound($, WIN)
-  $.ui.toast(`★ ${line}`, { timeoutMs: 6000 })
+
+  // A command's own output row says it; a button has none, so the chat is told.
+  if (isSaid) {
+    $.ui.log(`★ ${line}`)
+  }
 
   $.clock.after(CHEER_MS, () => {
     void (async () => {
@@ -184,7 +188,8 @@ const judge = async ($: EngineInterface, asked: string, id: number): Promise<voi
   }
 
   await update($, isDrifting, () => true)
-  $.ui.toast(`Side quest? Still on: ${clip(held.text, 50)}. /park it for later.`, { timeoutMs: 7000 })
+  // A line in the chat, where he just typed, and one the model never reads.
+  $.ui.log(`↯ Side quest? Still on: ${held.text}. /park it for later.`)
 }
 
 /** His move has stood a while: one chime, once, then quiet until the next turn ends. */
@@ -200,7 +205,8 @@ const nudge = async ($: EngineInterface, at: number): Promise<void> => {
   const held = await read($, focus)
   const waited = `Claude finished ${span(at - step.since)} ago.`
 
-  $.ui.toast(held === null ? `${waited} Your move.` : `Still on: ${clip(held.text, 50)}? ${waited}`, { timeoutMs: 8000 })
+  // Said in the chat, so it is still there when he comes back.
+  $.ui.log(held === null ? `◆ ${waited} Your move.` : `◆ Still on: ${held.text}? ${waited}`)
   void sound($, CHIME)
 }
 
@@ -272,6 +278,23 @@ const tick = async ($: EngineInterface): Promise<void> => {
 
 const open = ($: EngineInterface) => $.ui.open({ id: PANE, title: 'Ember' })
 
+/** The surfaces that draw the animated flame, and so get its pane without asking. */
+const hasFlame = (surface: RenderSurface): boolean => surface === 'desktop' || surface === 'vscode'
+
+const greet = async ($: EngineInterface): Promise<void> => {
+  if (await read($, isClosed)) {
+    return
+  }
+
+  void open($)
+    .then(placed => {
+      if (!placed.isPlaced) {
+        $.ui.toast('Ember is here: /ember opens it')
+      }
+    })
+    .catch(() => undefined)
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command
@@ -306,14 +329,18 @@ export const register: Register = on => {
       void tick($)
     })
 
-    if (e.isInteractive && !(await read($, isClosed))) {
-      void open($)
-        .then(placed => {
-          if (!placed.isPlaced) {
-            $.ui.toast('Ember is here: /ember opens it')
-          }
-        })
-        .catch(() => undefined)
+    // On the terminal a docked pane costs half the transcript for a line of text: there the
+    // creature lives in the band and the spinner line, and the pane waits for /ember.
+    if ((await $.session.surfaces()).some(hasFlame)) {
+      await greet($)
+    }
+
+    return next(e)
+  })
+
+  on('session.attach', async ($, e, next) => {
+    if (hasFlame(e.surface)) {
+      await greet($)
     }
 
     return next(e)
@@ -332,7 +359,7 @@ export const register: Register = on => {
     const word = args.toLowerCase()
 
     if (word === 'done') {
-      return { text: await finishFocus($) }
+      return { text: `★ ${await finishFocus($, false)}` }
     }
 
     if (word === 'drop') {
@@ -348,7 +375,12 @@ export const register: Register = on => {
       return { text: muted ? 'Ember is muted.' : 'Ember chimes when it is your move.' }
     }
 
-    await setFocus($, args)
+    if (args !== '') {
+      await setFocus($, args)
+
+      return { text: `▸ Locked in: ${clip(args, 120)}` }
+    }
+
     await update($, isClosed, () => false)
     await open($)
 
@@ -358,9 +390,7 @@ export const register: Register = on => {
       text:
         held === null
           ? 'Ember is open. `/ember <the one thing>` sets your focus, `/park <thought>` saves a stray one.'
-          : args === ''
-            ? `Ember is open. Still on: ${held.text}`
-            : `Locked in: ${held.text}`,
+          : `Ember is open. Still on: ${held.text}`,
     }
   })
 
@@ -503,12 +533,32 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // The anchor: what he is doing, what Claude is doing, whose move it is.
+  // On the terminal the spinner line is what the creature says: what Claude is doing
+  // right now, in plain words, where the engine would say "Pontificating".
+  on('ui.render', { component: 'Spinner', surface: 'terminal' }, async ($, e, next) => {
+    const current = await read($, mood)
+    const isTurn = current.phase === 'work' || current.phase === 'blocked'
+
+    // A message is the engine's own to say, and a turn the mod did not see start is not its to narrate.
+    if (e.props.message !== null || !isTurn) {
+      return next(e)
+    }
+
+    const step = await read($, live)
+    const between = e.props.mode === 'responding' ? 'Answering' : 'Thinking'
+    const said = step.label === '' || step.label === 'Thinking' ? between : step.label
+
+    return next({ ...e, props: { ...e.props, word: said } })
+  })
+
+  // The anchor, and on the terminal the creature's home: what he is doing and whose move it is.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const current = await read($, mood)
     const held = await read($, focus)
     const asked = await read($, ask)
-    const isQuiet = e.props.hasSurvey || (current.phase === 'rest' && held === null)
+    const isTerminal = e.surface === 'terminal'
+    // Off the terminal the pane shows the resting creature; on it the band is all there is of it.
+    const isQuiet = e.props.hasSurvey || (current.phase === 'rest' && held === null && !isTerminal)
 
     if (isQuiet) {
       return next(e)
@@ -519,27 +569,33 @@ export const register: Register = on => {
     const lot = await read($, parked)
     const isOff = held !== null && current.phase !== 'cheer' && (await read($, isDrifting))
     const elapsed = Math.max(0, at - step.since)
+    const steps = plural(step.tools, 'step')
     const { Box, Text } = $.ui.resolve(e)
 
     const status = {
-      rest: { color: READY, head: '○ Ready', tail: '' },
-      work: {
-        color: WORK,
-        head: `● ${step.label || 'Working'}`,
-        tail: `${plural(step.tools, 'step')} · ${stopwatch(elapsed)}`,
-      },
+      rest: { color: READY, head: '', tail: held === null ? 'resting · /ember <the one thing> sets a focus' : 'ready' },
+      // On the terminal the spinner line above already narrates the step and keeps the clock.
+      work: isTerminal
+        ? { color: WORK, head: step.tools > 0 ? `● ${steps}` : '', tail: '' }
+        : { color: WORK, head: `● ${step.label || 'Working'}`, tail: `${steps} · ${stopwatch(elapsed)}` },
       blocked: { color: YOU, head: `▲ ${step.label || 'Claude needs you'}`, tail: stopwatch(elapsed) },
       done: { color: READY, head: '◆ Your move', tail: elapsed >= 60_000 ? span(elapsed) : '' },
       cheer: { color: CHEER, head: '★ Done. Nice.', tail: '' },
     }[current.phase]
 
+    const shown = face({ ...current, heat: 1, isDrifting: isOff }, at / 1000)
     const goal = held?.text ?? asked
     const onIt = held !== null && at - held.startedAt >= 60_000 ? span(at - held.startedAt) : ''
-    const taken = status.head.length + status.tail.length + onIt.length + (isOff ? 38 : 22)
+    const taken = status.head.length + status.tail.length + onIt.length + (isOff ? 38 : 22) + (isTerminal ? 10 : 0)
     const room = Math.max(16, e.props.bodyColumns - taken)
 
     return (
       <Box flexDirection="row" columnGap={2}>
+        {isTerminal && (
+          <Text color={shown.color} bold>
+            {shown.text}
+          </Text>
+        )}
         {goal !== '' && (
           <Text bold={held !== null} dimColor={held === null} wrap="truncate-end">
             {held === null ? 'You asked: ' : '▸ '}
@@ -552,9 +608,11 @@ export const register: Register = on => {
             ↯ Side quest?
           </Text>
         )}
-        <Text color={status.color} bold>
-          {status.head}
-        </Text>
+        {status.head !== '' && (
+          <Text color={status.color} bold>
+            {status.head}
+          </Text>
+        )}
         {status.tail !== '' && <Text dimColor>{status.tail}</Text>}
         {lot.length > 0 && <Text dimColor>{lot.length} parked</Text>}
       </Box>
@@ -621,7 +679,7 @@ export const register: Register = on => {
               {held.text}
             </Text>
             <Text dimColor>{held.turns === 0 ? 'just lit' : `${plural(held.turns, 'turn')} on it`}</Text>
-            <Button key="done" variant="primary" label="Done" onPress={() => finishFocus($)} />
+            <Button key="done" variant="primary" label="Done" onPress={() => finishFocus($, true)} />
           </Box>
         )}
         {lot.length > 0 && (

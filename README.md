@@ -19,12 +19,25 @@ A Claude Code mod that keeps you on the one thing. Built for an ADD brain: a sma
 
 ## What it does
 
-- **Pane.** The flame sleeps until you prompt, watches Claude think, read, write and run, bounces when Claude is blocked on you, and settles when it's your move. It grows the more turns you stay on one focus.
-- **Band above the prompt.** What you asked (or your focus), what Claude is doing right now, a step count and a clock, then "Your move" and how long it has stood.
-- **`/ember <the one thing>`** pins a focus. `/ember done` finishes it with a small celebration, `/ember drop` clears it, `/ember mute` and `/ember unmute` switch the chimes.
+In the terminal Ember lives in the chat itself:
+
+```
+✳ Reading login.ts… (4s · ↓ 146 tokens)
+(•ᴗ•)⟳  ▸ Ship the login fix · 12m  ● 3 steps
+```
+
+- **The spinner line says what Claude is doing**, in plain words, where it would say "Pontificating".
+- **The band above the prompt is the creature's home.** A small face that sleeps until you prompt, moves while Claude works, asks `?` on a side quest and waves when it's your move, beside what you asked (or your focus) and whose move it is.
+- **Side quests and nudges are lines in the transcript**, where you'll see them when you come back. The model never reads them.
+
+In the desktop app the same band is joined by a pane with the animated flame above, which grows the more turns you stay on one focus.
+
+Everywhere:
+
+- **`/ember <the one thing>`** pins a focus. `/ember done` finishes it with a small celebration, `/ember drop` clears it, `/ember mute` and `/ember unmute` switch the chimes. `/ember` alone opens the pane.
 - **`/park <thought>`** saves a stray thought without derailing the turn. `/park` lists them, `/park clear` empties the lot, and one press in the pane turns a parked thought into the next focus.
 - **Chimes.** One when a turn of 20 seconds or more finishes, one when a question or permission prompt has sat for 10 seconds.
-- **Side-quest check.** With a focus set, each typed prompt of 24 or more characters gets one small Haiku call. A prompt that clearly leaves the focus is flagged in the band, on the flame and in a toast. It never blocks the prompt.
+- **Side-quest check.** With a focus set, each typed prompt of 24 or more characters gets one small Haiku call. A prompt that clearly leaves the focus is flagged in the band, on the creature and in the transcript. It never blocks the prompt.
 - **Idle nudge.** One chime five minutes after a turn ends unanswered, once.
 
 Parked thoughts and the mute setting are kept between sessions. Everything else lives for the session.
@@ -34,6 +47,12 @@ Parked thoughts and the mute setting are kept between sessions. Everything else 
 ```bash
 git clone https://github.com/nickdemari/ember.git
 claude --plugin-dir ./ember
+```
+
+To load it in every terminal session, name the folder in your shell profile:
+
+```bash
+export CLAUDE_CODE_PLUGIN_DIRS="$HOME/path/to/ember"
 ```
 
 In the desktop app's Code tab there is no flag to pass. Ask Claude to load its `plugin-authoring` skill and copy this folder into the session's mods folder, then pick **Enable for this session** when asked.

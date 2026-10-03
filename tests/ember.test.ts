@@ -38,17 +38,31 @@ const world = (on: On) => {
   const played: string[] = []
   const toasts: string[] = []
   const judged: string[] = []
+  const logs: string[] = []
+  const spun: string[] = []
+  const opened: string[] = []
+  const surfaces: ('terminal' | 'desktop')[] = ['desktop']
 
   mock.store(on)
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('command.register', (_$, e) => ({ value: { command: e.name } }))
-  on('ui.open', () => ({ value: { isPlaced: true as const } }))
+  on('ui.open', (_$, e) => {
+    opened.push(e.id)
+
+    return { value: { isPlaced: true as const } }
+  })
+  on('session.surfaces', () => ({ value: surfaces }))
+  on('session.attach', (_$, e) => ({ clientId: e.clientId }))
   on('ui.toast', (_$, e) => {
     toasts.push(e.text)
 
     return { value: undefined }
   })
-  on('ui.log', () => ({ value: undefined }))
+  on('ui.log', (_$, e) => {
+    logs.push(e.text)
+
+    return { value: undefined }
+  })
   on('audio.play', (_$, e) => {
     played.push(String(e.clip.asset))
 
@@ -66,15 +80,21 @@ const world = (on: On) => {
       },
     }
   })
-  // What the engine draws where the mod passes: nothing.
-  on('ui.render', ($, e) => $.ui.resolve(e).Box({}))
+  // What the engine draws where the mod passes: nothing. The spinner's word is kept as it arrived.
+  on('ui.render', ($, e) => {
+    if (e.component === 'Spinner') {
+      spun.push(e.props.word)
+    }
+
+    return $.ui.resolve(e).Box({})
+  })
   on('classic.PermissionRequest', () => ({}))
   on('prompt.submit', (_$, e) => ({ text: e.text }))
   on('turn.start', (_$, e) => ({ turnId: e.turnId }))
   on('turn.complete', (_$, e) => ({ text: e.answer }))
   on('tool.call', () => ({ result: 'ok' }))
 
-  return { clock, played, toasts, judged }
+  return { clock, played, toasts, judged, logs, spun, opened, surfaces }
 }
 
 const begin = ($: Engine) => $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true })
@@ -97,7 +117,8 @@ test('a turn is narrated on every surface that has a band, and ends as your move
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...BAND, surface })
     expect(await ui.find({ text: /You asked: fix the flaky login test/ })).toBeDefined()
-    expect(await ui.find({ text: /Thinking/ })).toBeDefined()
+    // The desktop band says the step; the terminal's shows the creature and leaves the step to the spinner line.
+    expect(await ui.find({ text: surface === 'terminal' ? /\(•ᴗ•\)/ : /Thinking/ })).toBeDefined()
     await ui.unmount()
   }
 
@@ -130,7 +151,7 @@ test('the pane draws the creature the surface can draw, with a way to set the on
 })
 
 test('setting, working on and finishing the one thing', async ($, on) => {
-  const { clock, played, toasts } = world(on)
+  const { clock, played, logs } = world(on)
   await begin($)
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
@@ -144,7 +165,7 @@ test('setting, working on and finishing the one thing', async ($, on) => {
   await ui.press({ key: 'done' })
   expect(await ui.find({ type: 'Input' })).toBeDefined()
   expect(played).toEqual(['fx/win.wav'])
-  expect(toasts.some(toast => toast.includes('Ship the login fix'))).toBe(true)
+  expect(logs.some(line => line.startsWith('★ Done: Ship the login fix'))).toBe(true)
   expect((await ui.find({ type: 'Svg' }))?.props.alt).toMatch(/Done\. Nice\./)
 
   await clock.advance(5000)
@@ -198,7 +219,7 @@ const answered = ($: Engine, turnId: string) =>
   $.turn.complete({ answer: 'done', durationMs: 1000, isAborted: false, turnId, reason: 'answer' })
 
 test('a prompt that leaves the focus is flagged, and does not feed the flame', async ($, on) => {
-  const { clock, toasts, judged } = world(on)
+  const { clock, logs, judged } = world(on)
   await begin($)
 
   const pane = await $.ui.mount({ ...PANE, surface: 'desktop' })
@@ -216,7 +237,7 @@ test('a prompt that leaves the focus is flagged, and does not feed the flame', a
   await clock.advance(10)
   expect(judged).toHaveLength(1)
 
-  // Off the focus: flagged in the band, on the creature and in a toast; the turn does not count.
+  // Off the focus: flagged in the band, on the creature and in a line of the chat; the turn does not count.
   await typed($, 'also redesign the settings page while you are in there')
   await clock.advance(10)
   await $.turn.start({ text: 'settings', turnId: 't2' })
@@ -224,7 +245,7 @@ test('a prompt that leaves the focus is flagged, and does not feed the flame', a
   const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
   expect(await band.find({ text: /Side quest\?/ })).toBeDefined()
   expect((await pane.find({ type: 'Svg' }))?.props.alt).toMatch(/Side quest\?/)
-  expect(toasts.some(toast => toast.includes('Side quest?') && toast.includes('Ship the login fix'))).toBe(true)
+  expect(logs.some(line => line.includes('Side quest?') && line.includes('Ship the login fix'))).toBe(true)
 
   await answered($, 't2')
   expect(await pane.find({ text: '1 turn on it' })).toBeDefined()
@@ -247,7 +268,7 @@ test('with no focus set nothing is judged', async ($, on) => {
 })
 
 test('his move standing five minutes gets one nudge, then quiet', async ($, on) => {
-  const { clock, played, toasts } = world(on)
+  const { clock, played, logs } = world(on)
   await begin($)
 
   const pane = await $.ui.mount({ ...PANE, surface: 'desktop' })
@@ -265,9 +286,58 @@ test('his move standing five minutes gets one nudge, then quiet', async ($, on) 
 
   await clock.advance(90_000)
   expect(played).toEqual(['fx/chime.wav'])
-  expect(toasts.some(toast => toast.startsWith('Still on: Ship the login fix?'))).toBe(true)
+  expect(logs.some(line => line.startsWith('◆ Still on: Ship the login fix?'))).toBe(true)
 
   await clock.advance(30 * 60_000)
   expect(played).toEqual(['fx/chime.wav'])
   await pane.unmount()
+})
+
+const SPINNER = {
+  plugin: 'ember',
+  component: 'Spinner',
+  props: { word: 'Pontificating', message: null, suffix: '…', mode: 'tool-use' },
+} as const
+
+test('on the terminal the creature lives in the chat: no pane unasked, the spinner says the step', async ($, on) => {
+  const { clock, spun, opened, surfaces } = world(on)
+  surfaces.splice(0, surfaces.length, 'terminal')
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  expect(opened).toEqual([])
+
+  // At rest the band is all there is of it, so it shows: the sleeping face and how to set a focus.
+  const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await band.find({ text: /\/ember <the one thing> sets a focus/ })).toBeDefined()
+
+  // The engine's own word stands until a turn the mod saw start is running.
+  const spinner = await $.ui.mount({ ...SPINNER, surface: 'terminal' })
+  expect(spun.at(-1)).toBe('Pontificating')
+
+  await $.turn.start({ text: 'go', turnId: 't1' })
+  const call = $.tool.call({ tool: 'Read', tool_use_id: 'u1', file_path: '/src/auth/login.ts' })
+  await clock.settle()
+  expect(spun.at(-1)).toBe('Reading login.ts')
+  await call
+
+  // Asking for the pane still opens it.
+  await $.command.run({
+    command: 'ember',
+    args: '',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: true, columns: 170 },
+  })
+  expect(opened).toEqual(['ember'])
+
+  await spinner.unmount()
+  await band.unmount()
+})
+
+test('a desktop that attaches gets the flame pane without asking', async ($, on) => {
+  const { opened, surfaces } = world(on)
+  surfaces.splice(0, surfaces.length)
+  await $.session.start({ cwd: '/tmp', surface: null, isInteractive: false })
+  expect(opened).toEqual([])
+
+  await $.session.attach({ surface: 'desktop', clientId: 'desktop:default' })
+  expect(opened).toEqual(['ember'])
 })
