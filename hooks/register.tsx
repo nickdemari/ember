@@ -421,13 +421,34 @@ const tick = async ($: EngineInterface): Promise<void> => {
 
 const open = ($: EngineInterface) => $.ui.open({ id: PANE, title: 'Ember' })
 
+/** Where things stand, as /ember says it in the chat: the focus, what is parked, the sound, and what to type. */
+const standing = async ($: EngineInterface): Promise<string> => {
+  const held = await read($, focus)
+  const lot = await read($, parked)
+  const muted = await read($, isMuted)
+  const at = await $.clock.now()
+  const kept = `${lot.length === 0 ? 'nothing parked' : `${lot.length} parked`} · sound ${muted ? 'off' : 'on'}`
+
+  if (held === null) {
+    return [
+      `No focus set · ${kept}`,
+      '`/ember <the one thing>` sets a focus · `/park <thought>` saves a stray one',
+    ].join('\n')
+  }
+
+  return [
+    `▸ **${held.text}** · ${span(at - held.startedAt)} · ${plural(held.turns, 'turn')} · ${kept}`,
+    `\`/ember done\` finishes it · \`/ember drop\` clears it · \`/ember ${muted ? 'unmute' : 'mute'}\` · \`/park\` lists what is parked`,
+  ].join('\n')
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command
       .register({
         name: 'ember',
-        description: 'Set the one thing you are doing, or open your focus companion',
-        argumentHint: '[the one thing | done | drop | mute]',
+        description: 'Set the one thing you are doing, or see where your focus stands',
+        argumentHint: '[the one thing | done | drop | mute | pane]',
         immediate: true,
       })
       .catch(() => $.ui.log('could not register /ember', { to: 'debug' }))
@@ -452,7 +473,7 @@ export const register: Register = on => {
     await update($, mood, was => (was.phase === 'cheer' ? feel('done', 'think') : was))
 
     // Nothing opens by itself: the mod lives in the chat (the band, the spinner line, lines
-    // of the transcript), and the pane waits for /ember. A pane found open at a load was left
+    // of the transcript), and the pane waits for /ember pane. A pane found open at a load was left
     // by an earlier version that opened one unasked, in a session still running: close it.
     if ((await $.ui.panes()).some(pane => pane.id === PANE)) {
       await $.ui.close({ id: PANE }).catch(() => undefined)
@@ -486,22 +507,20 @@ export const register: Register = on => {
       return { text: muted ? 'Ember is muted.' : 'Ember chimes when it is your move.' }
     }
 
+    // The pane is asked for by name: on its own, /ember answers in the chat.
+    if (word === 'pane') {
+      await open($)
+
+      return { text: 'Pane opened. Close it with its ✕.' }
+    }
+
     if (args !== '') {
       await setFocus($, args)
 
       return { text: `▸ Locked in: ${clip(args, 120)}` }
     }
 
-    await open($)
-
-    const held = await read($, focus)
-
-    return {
-      text:
-        held === null
-          ? 'Ember is open. `/ember <the one thing>` sets your focus, `/park <thought>` saves a stray one.'
-          : `Ember is open. Still on: ${held.text}`,
-    }
+    return { text: await standing($) }
   })
 
   on('command.run', { command: 'park' }, async ($, e) => {
@@ -771,7 +790,7 @@ export const register: Register = on => {
     )
   })
 
-  // The companion, opened by /ember. It reads the mood and never the clock, and its flame is drawn
+  // The companion, opened by /ember pane. It reads the mood and never the clock, and its flame is drawn
   // from the phase alone, so the animation restarts when the phase changes and at no other time.
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const current = await read($, mood)

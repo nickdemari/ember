@@ -329,10 +329,19 @@ test('on the terminal it lives in the chat: no pane unasked, the spinner says th
   expect(spun.at(-1)).toBe('Reading login.ts')
   await call
 
-  // Asking for the pane still opens it.
-  await $.command.run({
+  // On its own /ember answers in the chat; the pane is asked for by name.
+  const stood = await $.command.run({
     command: 'ember',
     args: '',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: true, columns: 170 },
+  })
+  expect(stood.text).toMatch(/No focus set/)
+  expect(opened).toEqual([])
+
+  await $.command.run({
+    command: 'ember',
+    args: 'pane',
     origin: { kind: 'composer' },
     presentation: { isFullscreen: true, columns: 170 },
   })

@@ -33,11 +33,11 @@ Ember lives in the chat itself. In the terminal:
 
 The desktop app gets the same band and transcript lines; there the band also says the step, since the spinner row already does its own narrating.
 
-Nothing opens by itself. `/ember` on its own opens a pane with your focus, parked thoughts and the sound switch, and in the desktop app the animated flame above: it sleeps until you prompt, wakes while Claude works, bounces when Claude is blocked on you, and grows the more turns you stay on one focus.
+Nothing opens by itself, and `/ember` on its own answers in the chat with where your focus stands. `/ember pane` opens a pane with your focus, parked thoughts and the sound switch, and in the desktop app the animated flame above: it sleeps until you prompt, wakes while Claude works, bounces when Claude is blocked on you, and grows the more turns you stay on one focus.
 
 Everywhere:
 
-- **`/ember <the one thing>`** pins a focus. `/ember done` finishes it with a small celebration, `/ember drop` clears it, `/ember mute` and `/ember unmute` switch the chimes. `/ember` alone opens the pane.
+- **`/ember <the one thing>`** pins a focus. `/ember done` finishes it with a small celebration, `/ember drop` clears it, `/ember mute` and `/ember unmute` switch the chimes. `/ember` alone says where things stand.
 - **`/park <thought>`** saves a stray thought without derailing the turn. `/park` lists them, `/park clear` empties the lot, and one press in the pane turns a parked thought into the next focus.
 - **Chimes.** One when a turn of 20 seconds or more finishes, one when a question or permission prompt has sat for 10 seconds.
 - **Side-quest check.** With a focus set, each typed prompt of 24 or more characters gets one small Haiku call. A prompt that clearly leaves the focus is flagged in the band, on the flame and in the transcript. It never blocks the prompt.
