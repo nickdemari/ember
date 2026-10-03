@@ -10,6 +10,9 @@ export type EmberMood = { phase: EmberPhase; gesture: EmberGesture }
 /** What the band narrates: the current step, when the phase began, steps so far, and whether the idle nudge went out. */
 export type EmberLive = { label: string; since: number; tools: number; isNudged?: boolean }
 
+/** A subagent at work: its id, what it was sent to do, and the step it is on. */
+export type EmberAgent = { id: string; name: string; label: string }
+
 /** The one thing, when you set one. */
 export type EmberFocus = { text: string; startedAt: number; turns: number }
 
@@ -18,6 +21,7 @@ declare module 'claude-code' {
     ember: {
       mood: EmberMood
       live: EmberLive
+      agents: EmberAgent[]
       focus: EmberFocus | null
       ask: string
       parked: string[]

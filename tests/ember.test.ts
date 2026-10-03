@@ -42,6 +42,8 @@ const world = (on: On) => {
   const spun: string[] = []
   const opened: string[] = []
   const surfaces: ('terminal' | 'desktop')[] = ['desktop']
+  // The engine's own record of the session's subagents, as `$.agent.list()` answers it.
+  const roster: { id: string; description: string; type: string; status: string }[] = []
 
   mock.store(on)
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
@@ -52,6 +54,13 @@ const world = (on: On) => {
     return { value: { isPlaced: true as const } }
   })
   on('session.surfaces', () => ({ value: surfaces }))
+  on('agent.list', () => ({ value: roster }))
+  on('agent.spawn', (_$, e) => {
+    const agentId = `agent-${roster.length + 1}`
+    roster.push({ id: agentId, description: e.description, type: e.subagentType, status: 'running' })
+
+    return { model: 'haiku', agentId }
+  })
   on('session.attach', (_$, e) => ({ clientId: e.clientId }))
   on('ui.toast', (_$, e) => {
     toasts.push(e.text)
@@ -94,7 +103,7 @@ const world = (on: On) => {
   on('turn.complete', (_$, e) => ({ text: e.answer }))
   on('tool.call', () => ({ result: 'ok' }))
 
-  return { clock, played, toasts, judged, logs, spun, opened, surfaces }
+  return { clock, played, toasts, judged, logs, spun, opened, surfaces, roster }
 }
 
 const begin = ($: Engine) => $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true })
@@ -117,14 +126,15 @@ test('a turn is narrated on every surface that has a band, and ends as your move
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...BAND, surface })
     expect(await ui.find({ text: /You asked: fix the flaky login test/ })).toBeDefined()
-    // The desktop band says the step; the terminal's shows the creature and leaves the step to the spinner line.
-    expect(await ui.find({ text: surface === 'terminal' ? /\(•ᴗ•\)/ : /Thinking/ })).toBeDefined()
+    // The desktop band says the step; the terminal's leaves it to the spinner line.
+    expect(await ui.find({ text: surface === 'terminal' ? /● Working/ : /● Thinking/ })).toBeDefined()
     await ui.unmount()
   }
 
   const call = $.tool.call({ tool: 'Read', tool_use_id: 'u1', file_path: '/src/auth/login.ts' })
   await clock.advance(3000)
   await call
+  await clock.advance(28_000)
 
   await $.turn.complete({ answer: 'done', durationMs: 31_000, isAborted: false, turnId: 't1', reason: 'answer' })
 
@@ -132,7 +142,7 @@ test('a turn is narrated on every surface that has a band, and ends as your move
   expect(await ui.find({ text: /Your move/ })).toBeDefined()
   await ui.unmount()
 
-  // A turn long enough to have wandered off from gets the chime.
+  // Work long enough to have wandered off from gets the chime.
   expect(played).toEqual(['fx/chime.wav'])
 })
 
@@ -305,7 +315,7 @@ test('on the terminal the creature lives in the chat: no pane unasked, the spinn
   await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
   expect(opened).toEqual([])
 
-  // At rest the band is all there is of it, so it shows: the sleeping face and how to set a focus.
+  // At rest the band is all there is of it, so it says how to set a focus.
   const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
   expect(await band.find({ text: /\/ember <the one thing> sets a focus/ })).toBeDefined()
 
@@ -340,4 +350,49 @@ test('a desktop that attaches gets the flame pane without asking', async ($, on)
 
   await $.session.attach({ surface: 'desktop', clientId: 'desktop:default' })
   expect(opened).toEqual(['ember'])
+})
+
+const SPAWN = {
+  tool_use_id: 'spawn-1',
+  prompt: 'Find where the session token is refreshed.',
+  description: 'Trace the token refresh',
+  subagentType: 'general-purpose',
+  provider: { plugin: 'engine', tier: 'core' },
+  parentModel: 'haiku',
+  background: true,
+  fork: false,
+} as const
+
+test('agents still at work are work, not his move; the chime waits for the last of it', async ($, on) => {
+  const { clock, played, spun, surfaces, roster } = world(on)
+  surfaces.splice(0, surfaces.length, 'terminal')
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  await $.turn.start({ text: 'look into the token refresh', turnId: 't1' })
+  await $.agent.spawn(SPAWN)
+
+  const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  const spinner = await $.ui.mount({ ...SPINNER, surface: 'terminal' })
+  expect(await band.find({ text: '● 1 agent working' })).toBeDefined()
+
+  // With the main loop only thinking, the spinner line says what its agent is on.
+  expect(spun.at(-1)).toBe('Agent: Starting')
+
+  // The main loop stops while the agent works on: still work, and no chime.
+  await clock.advance(30_000)
+  await $.turn.complete({ answer: 'launched', durationMs: 30_000, isAborted: false, turnId: 't1', reason: 'answer' })
+  expect(await band.find({ text: '● 1 agent working' })).toBeDefined()
+  expect(played).toEqual([])
+
+  // The agent ends and nothing takes its report up: now it is his move, once.
+  const [agent] = roster
+  if (agent !== undefined) {
+    agent.status = 'completed'
+  }
+  await $.turn.complete({ answer: 'found it', durationMs: 5000, isAborted: false, turnId: 'a1', reason: 'answer', agentId: 'agent-1' })
+  await clock.advance(3000)
+  expect(await band.find({ text: '◆ Your move' })).toBeDefined()
+  expect(played).toEqual(['fx/chime.wav'])
+
+  await spinner.unmount()
+  await band.unmount()
 })

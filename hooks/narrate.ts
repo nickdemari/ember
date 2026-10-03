@@ -83,13 +83,6 @@ export const narrate = (tool: string, input: Readonly<Record<string, unknown>>):
   return { gesture: 'run', label: `Using ${tool}` }
 }
 
-/** `0:41`, `12:05`: a running turn's clock. */
-export const stopwatch = (ms: number): string => {
-  const seconds = Math.max(0, Math.floor(ms / 1000))
-
-  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
-}
-
 /** `under a minute`, `12m`, `1h 5m`: how long something has stood. */
 export const span = (ms: number): string => {
   const minutes = Math.floor(Math.max(0, ms) / 60_000)

@@ -1,9 +1,9 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderElement, RenderSurface } from 'claude-code'
 
-import type { EmberFocus, EmberGesture, EmberMood, EmberPhase } from '../types'
-import { caption, face, portrait } from './creature'
-import { clip, narrate, span, stopwatch } from './narrate'
+import type { EmberAgent, EmberFocus, EmberGesture, EmberLive, EmberMood, EmberPhase } from '../types'
+import { caption, portrait } from './creature'
+import { clip, narrate, span } from './narrate'
 
 const PANE = 'ember'
 const CHIME = 'fx/chime.wav'
@@ -14,7 +14,7 @@ const YOU = '#FF5D73'
 const READY = '#3FB68B'
 const CHEER = '#E8B931'
 
-// A turn shorter than this ended while he was still looking at it: no chime.
+// Work shorter than this ended while he was still looking at it: no chime.
 const CHIME_AFTER_MS = 20_000
 // How long a question or permission prompt may sit before the chime calls him back.
 const KNOCK_AFTER_MS = 10_000
@@ -26,6 +26,14 @@ const CHEER_MS = 4500
 const PARKED_MAX = 50
 // How long his move may stand before one chime asks whether he is still there.
 const NUDGE_AFTER_MS = 5 * 60_000
+// Nothing drawn counts seconds, so the clock the drawings read moves this often
+// and no more: a row redrawn every second reads as blinking.
+const HEARTBEAT_MS = 15_000
+// The main loop takes an agent's report up within a moment of its end: wait this long
+// before calling it his move, so a turn about to start is not chimed over.
+const REPORT_MS = 2500
+// He typed the prompt a line above the band: an echo longer than this is noise.
+const ASK_SHOWN = 60
 // A prompt shorter than this ("yes", "do it") is a reply, never a new task: not judged.
 const JUDGE_MIN_CHARS = 24
 const JUDGE = [
@@ -51,10 +59,14 @@ const MACHINE = new Set([
   'plugin',
 ])
 
+// An agent the engine lists under one of these has stopped, however it ended.
+const ENDED = new Set(['completed', 'failed', 'killed', 'stopped', 'cancelled'])
+
 const feel = (phase: EmberPhase, gesture: EmberGesture): EmberMood => ({ phase, gesture })
 
 const mood = atom({ plugin: 'ember', key: 'mood' } as const, feel('rest', 'think'))
 const live = atom({ plugin: 'ember', key: 'live' } as const, { label: '', since: 0, tools: 0 })
+const agents = atom({ plugin: 'ember', key: 'agents' } as const, [])
 const focus = atom({ plugin: 'ember', key: 'focus' } as const, null)
 const ask = atom({ plugin: 'ember', key: 'ask' } as const, '')
 const parked = atom({ plugin: 'ember', key: 'parked' } as const, [])
@@ -78,6 +90,54 @@ const heatOf = (current: EmberMood, held: EmberFocus | null): number => {
 }
 
 const plural = (count: number, word: string): string => `${count} ${word}${count === 1 ? '' : 's'}`
+
+/** What is being done right now, in words: the main loop's own step, else what its agents are on. */
+const saying = (step: EmberLive, crew: readonly EmberAgent[], isTurn: boolean): string => {
+  if (isTurn && step.label !== '' && step.label !== 'Thinking') {
+    return step.label
+  }
+
+  const last = crew.at(-1)
+
+  if (last !== undefined) {
+    return clip(`${crew.length === 1 ? 'Agent' : `${crew.length} agents`}: ${last.label}`, 72)
+  }
+
+  return isTurn ? 'Thinking' : ''
+}
+
+/** The state in a glyph and a few words, its color, and the detail beside it: one voice for the band and the pane. */
+const statusOf = (
+  current: EmberMood,
+  step: EmberLive,
+  crew: readonly EmberAgent[],
+  at: number,
+  isTurn: boolean,
+  isNarrated: boolean,
+): { color: string; head: string; tail: string } => {
+  const waited = Math.max(0, at - step.since)
+  const steps = step.tools > 0 ? plural(step.tools, 'step') : ''
+  const crewed = crew.length > 0 ? `${plural(crew.length, 'agent')} working` : 'Working'
+
+  if (current.phase === 'work') {
+    // Where the spinner line narrates the step, the band only says who is working.
+    return { color: WORK, head: `● ${isNarrated ? crewed : saying(step, crew, isTurn) || crewed}`, tail: steps }
+  }
+
+  if (current.phase === 'blocked') {
+    return { color: YOU, head: `▲ ${step.label || 'Claude needs you'}`, tail: '' }
+  }
+
+  if (current.phase === 'done') {
+    return { color: READY, head: '◆ Your move', tail: waited >= 60_000 ? span(waited) : '' }
+  }
+
+  if (current.phase === 'cheer') {
+    return { color: CHEER, head: '★ Done. Nice.', tail: '' }
+  }
+
+  return { color: READY, head: '○ Ready', tail: '' }
+}
 
 const sound = async ($: EngineInterface, asset: string): Promise<void> => {
   if (await read($, isMuted)) {
@@ -142,8 +202,8 @@ const finishFocus = async ($: EngineInterface, isSaid = true): Promise<string> =
 
   $.clock.after(CHEER_MS, () => {
     void (async () => {
-      const isTurn = await read($, isBusy)
-      await update($, mood, was => (was.phase === 'cheer' ? feel(isTurn ? 'work' : 'done', 'think') : was))
+      const isWorking = (await read($, isBusy)) || (await read($, agents)).length > 0
+      await update($, mood, was => (was.phase === 'cheer' ? feel(isWorking ? 'work' : 'done', 'think') : was))
     })()
   })
 
@@ -161,6 +221,9 @@ let running = 0
 let waits = 0
 // Which typed prompt is the newest: a verdict on an older one is dropped.
 let asks = 0
+// Loops that call tools under an id the engine lists no agent for (a fork, a
+// compaction): not his agents, and asked about once.
+const strangers = new Set<string>()
 
 /** One small model call per typed prompt while a focus is set: is this still the one thing? */
 const judge = async ($: EngineInterface, asked: string, id: number): Promise<void> => {
@@ -189,7 +252,7 @@ const judge = async ($: EngineInterface, asked: string, id: number): Promise<voi
 
   await update($, isDrifting, () => true)
   // A line in the chat, where he just typed, and one the model never reads.
-  $.ui.log(`↯ Side quest? Still on: ${held.text}. /park it for later.`)
+  $.ui.log(`Side quest? Still on: ${held.text}. /park it for later.`)
 }
 
 /** His move has stood a while: one chime, once, then quiet until the next turn ends. */
@@ -255,25 +318,106 @@ const settle = async ($: EngineInterface): Promise<void> => {
     await update($, mood, held => feel('work', isIdle ? 'think' : held.gesture))
   }
 
+  // The agents' steps are kept apart from this label, so clearing it never hides what they are on.
   if (isIdle) {
     await update($, live, held => ({ ...held, label: 'Thinking' }))
   }
 }
 
+/** Drops the agents the engine no longer runs: one that was killed, or whose end the mod never heard. */
+const reconcile = async ($: EngineInterface): Promise<EmberAgent[]> => {
+  const crew = await read($, agents)
+
+  if (crew.length === 0) {
+    return crew
+  }
+
+  const listed = await $.agent.list().catch(() => undefined)
+
+  // No list is no news: keep what is known.
+  if (listed === undefined) {
+    return crew
+  }
+
+  const alive = new Set(listed.filter(one => !ENDED.has(one.status)).map(one => one.id))
+  const kept = crew.filter(one => alive.has(one.id))
+
+  return kept.length === crew.length ? crew : update($, agents, list => list.filter(one => alive.has(one.id)))
+}
+
+/** Notes an agent's step and answers whether the loop is one of his agents at all. */
+const track = async ($: EngineInterface, id: string, label: string): Promise<boolean> => {
+  let name = (await read($, agents)).find(one => one.id === id)?.name
+
+  if (name === undefined) {
+    if (strangers.has(id)) {
+      return false
+    }
+
+    const listed = (await $.agent.list().catch(() => [])).find(one => one.id === id && !ENDED.has(one.status))
+
+    if (listed === undefined) {
+      strangers.add(id)
+
+      return false
+    }
+
+    name = clip(listed.description, 40)
+  }
+
+  const known = name
+  // The agent with the newest step goes last: it is the one the narration quotes.
+  await update($, agents, list => [...list.filter(one => one.id !== id), { id, name: known, label }])
+
+  return true
+}
+
+/** Agents are at work with the main loop idle: that is work, not his move. */
+const carryOn = async ($: EngineInterface, at: number): Promise<void> => {
+  const was = await read($, mood)
+
+  if (was.phase === 'done' || was.phase === 'rest') {
+    await update($, live, held => ({ ...held, label: '', since: at }))
+  }
+
+  await update($, mood, held => (held.phase === 'cheer' || held.phase === 'blocked' ? held : feel('work', 'run')))
+}
+
+/** Everything is finished: his move, and a chime if he has had time to wander off. */
+const handOver = async ($: EngineInterface, at: number, isQuiet: boolean): Promise<void> => {
+  const step = await read($, live)
+
+  await update($, now, () => at)
+  await update($, live, held => ({ ...held, label: '', since: at, isNudged: false }))
+  await update($, mood, was => (was.phase === 'cheer' ? was : feel('done', 'think')))
+
+  if (!isQuiet && at - step.since >= CHIME_AFTER_MS) {
+    void sound($, CHIME)
+  }
+}
+
+/** With the main loop idle and no agent left at work, the work is over. */
+const wrapUp = async ($: EngineInterface): Promise<void> => {
+  const isOver =
+    (await read($, mood)).phase === 'work' && !(await read($, isBusy)) && (await reconcile($)).length === 0
+
+  if (isOver) {
+    await handOver($, await $.clock.now(), false)
+  }
+}
+
 const tick = async ($: EngineInterface): Promise<void> => {
   const at = await $.clock.now()
-  const { phase } = await read($, mood)
+  await update($, now, () => at)
 
-  // Seconds matter while a turn runs; standing still, minutes do.
-  if (phase !== 'work' && phase !== 'blocked' && Math.floor(at / 1000) % 15 !== 0) {
+  if ((await read($, mood)).phase === 'done') {
+    await nudge($, at)
+
     return
   }
 
-  await update($, now, () => at)
-
-  if (phase === 'done') {
-    await nudge($, at)
-  }
+  // An agent whose end the mod never heard would leave it working forever.
+  await wrapUp($)
 }
 
 const open = ($: EngineInterface) => $.ui.open({ id: PANE, title: 'Ember' })
@@ -325,12 +469,12 @@ export const register: Register = on => {
     // A reload drops the timer that ends a cheer.
     await update($, mood, was => (was.phase === 'cheer' ? feel('done', 'think') : was))
 
-    $.clock.every(1000, () => {
+    $.clock.every(HEARTBEAT_MS, () => {
       void tick($)
     })
 
-    // On the terminal a docked pane costs half the transcript for a line of text: there the
-    // creature lives in the band and the spinner line, and the pane waits for /ember.
+    // On the terminal a docked pane costs half the transcript for a line of text: there
+    // the band and the spinner line are the whole of it, and the pane waits for /ember.
     if ((await $.session.surfaces()).some(hasFlame)) {
       await greet($)
     }
@@ -449,28 +593,50 @@ export const register: Register = on => {
     running = 0
     waits += 1
 
+    // A turn that starts while work is under way (an agent reported in) carries the same stretch on.
+    const isOngoing = (await read($, mood)).phase === 'work'
+    await reconcile($)
+
     await update($, isBusy, () => true)
     await update($, now, () => at)
-    await update($, live, () => ({ label: 'Thinking', since: at, tools: 0 }))
+    await update($, live, held => (isOngoing ? { ...held, label: 'Thinking' } : { label: 'Thinking', since: at, tools: 0 }))
     await update($, mood, was => (was.phase === 'cheer' ? was : feel('work', 'think')))
 
     return next(e)
   })
 
+  on('agent.spawn', async ($, e, next) => {
+    const started = await next(e)
+
+    if (started.agentId !== undefined) {
+      const id = started.agentId
+      await update($, agents, list => [...list.filter(one => one.id !== id), { id, name: clip(e.description, 40), label: 'Starting' }])
+
+      if (!(await read($, isBusy))) {
+        await carryOn($, await $.clock.now())
+      }
+    }
+
+    return started
+  })
+
   on('tool.call', async ($, e, next) => {
     const said = narrate(e.tool, e as unknown as Readonly<Record<string, unknown>>)
-    const isTurn = await read($, isBusy)
 
-    // A subagent's step is narrated, the creature keeps watching the main loop.
+    // An agent's step is kept under the agent: the main loop's own label is not its to write.
     if (e.agentId !== undefined) {
-      if (isTurn) {
-        await update($, live, held => ({ ...held, label: `↳ ${said.label}`, tools: held.tools + 1 }))
+      if (await track($, e.agentId, said.label)) {
+        await update($, live, held => ({ ...held, tools: held.tools + 1 }))
+
+        if (!(await read($, isBusy))) {
+          await carryOn($, await $.clock.now())
+        }
       }
 
       try {
         return await next(e)
       } finally {
-        // Its call came back, so nothing of its waits on him; the main loop's label is not its to reset.
+        // Its call came back, so nothing of its waits on him.
         if ((await read($, mood)).phase === 'blocked') {
           await update($, mood, was => (was.phase === 'blocked' ? feel('work', was.gesture) : was))
         }
@@ -479,7 +645,7 @@ export const register: Register = on => {
 
     running += 1
 
-    if (isTurn) {
+    if (await read($, isBusy)) {
       await update($, live, held => ({ ...held, label: said.label, tools: held.tools + 1 }))
       await update($, mood, was => (was.phase === 'cheer' ? was : feel('work', said.gesture)))
     }
@@ -508,8 +674,16 @@ export const register: Register = on => {
   })
 
   on('turn.complete', async ($, e, next) => {
+    // An agent's turn ended. It may run another (it waits on a shell, then goes on), so the
+    // engine's list says whether it is over; with the main loop idle and none left, the work is.
     if (e.agentId !== undefined) {
-      return next(e)
+      const ended = await next(e)
+      await reconcile($)
+      $.clock.after(REPORT_MS, () => {
+        void wrapUp($)
+      })
+
+      return ended
     }
 
     const at = await $.clock.now()
@@ -522,110 +696,122 @@ export const register: Register = on => {
     }
 
     await update($, isBusy, () => false)
-    await update($, now, () => at)
-    await update($, live, held => ({ ...held, label: '', since: at, isNudged: false }))
-    await update($, mood, was => (was.phase === 'cheer' ? was : feel('done', 'think')))
 
-    if (!e.isAborted && e.durationMs >= CHIME_AFTER_MS) {
-      void sound($, CHIME)
+    // The main loop stopped with agents still at work: not his move yet.
+    if ((await reconcile($)).length > 0) {
+      await update($, now, () => at)
+      await update($, live, held => ({ ...held, label: '' }))
+      await carryOn($, at)
+    } else {
+      await handOver($, at, e.isAborted)
     }
 
     return next(e)
   })
 
-  // On the terminal the spinner line is what the creature says: what Claude is doing
-  // right now, in plain words, where the engine would say "Pontificating".
+  // On the terminal the spinner line says what Claude is doing right now, in plain
+  // words, where the engine would say "Pontificating".
   on('ui.render', { component: 'Spinner', surface: 'terminal' }, async ($, e, next) => {
-    const current = await read($, mood)
-    const isTurn = current.phase === 'work' || current.phase === 'blocked'
-
-    // A message is the engine's own to say, and a turn the mod did not see start is not its to narrate.
-    if (e.props.message !== null || !isTurn) {
+    // A message is the engine's own to say.
+    if (e.props.message !== null) {
       return next(e)
     }
 
-    const step = await read($, live)
-    const between = e.props.mode === 'responding' ? 'Answering' : 'Thinking'
-    const said = step.label === '' || step.label === 'Thinking' ? between : step.label
+    const crew = await read($, agents)
+    const own = crew.find(one => one.id === e.requestId)
 
-    return next({ ...e, props: { ...e.props, word: said } })
+    // An agent's own spinner says that agent's step.
+    if (own !== undefined) {
+      return next({ ...e, props: { ...e.props, word: own.label } })
+    }
+
+    // A turn the mod did not see start is not its to narrate.
+    if (!(await read($, isBusy))) {
+      return next(e)
+    }
+
+    const said = saying(await read($, live), crew, true)
+    const word = said === 'Thinking' && e.props.mode === 'responding' ? 'Answering' : said
+
+    return next({ ...e, props: { ...e.props, word } })
   })
 
-  // The anchor, and on the terminal the creature's home: what he is doing and whose move it is.
+  // The anchor: whose move it is, and what he is doing.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const current = await read($, mood)
     const held = await read($, focus)
-    const asked = await read($, ask)
     const isTerminal = e.surface === 'terminal'
-    // Off the terminal the pane shows the resting creature; on it the band is all there is of it.
-    const isQuiet = e.props.hasSurvey || (current.phase === 'rest' && held === null && !isTerminal)
 
-    if (isQuiet) {
+    if (e.props.hasSurvey) {
       return next(e)
     }
 
-    const step = await read($, live)
-    const at = await read($, now)
-    const lot = await read($, parked)
-    const isOff = held !== null && current.phase !== 'cheer' && (await read($, isDrifting))
-    const elapsed = Math.max(0, at - step.since)
-    const steps = plural(step.tools, 'step')
     const { Box, Text } = $.ui.resolve(e)
 
-    const status = {
-      rest: { color: READY, head: '', tail: held === null ? 'resting · /ember <the one thing> sets a focus' : 'ready' },
-      // On the terminal the spinner line above already narrates the step and keeps the clock.
-      work: isTerminal
-        ? { color: WORK, head: step.tools > 0 ? `● ${steps}` : '', tail: '' }
-        : { color: WORK, head: `● ${step.label || 'Working'}`, tail: `${steps} · ${stopwatch(elapsed)}` },
-      blocked: { color: YOU, head: `▲ ${step.label || 'Claude needs you'}`, tail: stopwatch(elapsed) },
-      done: { color: READY, head: '◆ Your move', tail: elapsed >= 60_000 ? span(elapsed) : '' },
-      cheer: { color: CHEER, head: '★ Done. Nice.', tail: '' },
-    }[current.phase]
+    if (current.phase === 'rest' && held === null) {
+      // Off the terminal the pane shows the resting flame; on it this line is how he knows it is there.
+      return isTerminal ? <Text dimColor>ember · /ember &lt;the one thing&gt; sets a focus</Text> : next(e)
+    }
 
-    const shown = face({ ...current, heat: 1, isDrifting: isOff }, at / 1000)
-    const goal = held?.text ?? asked
+    const step = await read($, live)
+    const crew = await read($, agents)
+    const at = await read($, now)
+    const lot = await read($, parked)
+    const asked = await read($, ask)
+    const isOff = held !== null && current.phase !== 'cheer' && (await read($, isDrifting))
+    const status = statusOf(current, step, crew, at, await read($, isBusy), isTerminal)
     const onIt = held !== null && at - held.startedAt >= 60_000 ? span(at - held.startedAt) : ''
-    const taken = status.head.length + status.tail.length + onIt.length + (isOff ? 38 : 22) + (isTerminal ? 10 : 0)
-    const room = Math.max(16, e.props.bodyColumns - taken)
+    const goal = held === null ? (asked === '' ? '' : `You asked: ${clip(asked, ASK_SHOWN)}`) : `▸ ${held.text}`
 
+    // The state comes first and never shrinks; the goal takes what is left and is cut there.
     return (
       <Box flexDirection="row" columnGap={2}>
-        {isTerminal && (
-          <Text color={shown.color} bold>
-            {shown.text}
-          </Text>
-        )}
-        {goal !== '' && (
-          <Text bold={held !== null} dimColor={held === null} wrap="truncate-end">
-            {held === null ? 'You asked: ' : '▸ '}
-            {clip(goal, room)}
-          </Text>
-        )}
-        {onIt !== '' && <Text dimColor>{onIt}</Text>}
-        {isOff && (
-          <Text color={YOU} bold>
-            ↯ Side quest?
-          </Text>
-        )}
-        {status.head !== '' && (
+        <Box flexShrink={0}>
           <Text color={status.color} bold>
             {status.head}
           </Text>
+        </Box>
+        {status.tail !== '' && (
+          <Box flexShrink={0}>
+            <Text dimColor>{status.tail}</Text>
+          </Box>
         )}
-        {status.tail !== '' && <Text dimColor>{status.tail}</Text>}
-        {lot.length > 0 && <Text dimColor>{lot.length} parked</Text>}
+        {isOff && (
+          <Box flexShrink={0}>
+            <Text color={YOU} bold>
+              Side quest?
+            </Text>
+          </Box>
+        )}
+        {goal !== '' && (
+          <Box flexShrink={1} minWidth={0}>
+            <Text bold={held !== null} dimColor={held === null} wrap="truncate-end">
+              {goal}
+            </Text>
+          </Box>
+        )}
+        {onIt !== '' && (
+          <Box flexShrink={0}>
+            <Text dimColor>{onIt}</Text>
+          </Box>
+        )}
+        {lot.length > 0 && (
+          <Box flexShrink={0}>
+            <Text dimColor>{lot.length} parked</Text>
+          </Box>
+        )}
       </Box>
     )
   })
 
-  // The companion. It reads the mood and never the clock, so its animation is
-  // redrawn when the creature changes and at no other time.
+  // The companion. It reads the mood and never the clock, and its flame is drawn from the
+  // phase alone, so the animation restarts when the phase changes and at no other time.
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const current = await read($, mood)
     const held = await read($, focus)
     const lot = await read($, parked)
     const muted = await read($, isMuted)
+    const crew = await read($, agents)
     const look = { ...current, heat: heatOf(current, held), isDrifting: held !== null && (await read($, isDrifting)) }
     const { Box, Text, Button } = $.ui.resolve(e)
     const width = Math.max(120, Math.min(220, e.props.bodyColumns * 7))
@@ -634,17 +820,17 @@ export const register: Register = on => {
     let entry: RenderElement
 
     if (e.surface === 'terminal') {
-      const shown = face(look)
+      const status = statusOf(current, await read($, live), crew, 0, await read($, isBusy), false)
       creature = (
-        <Text color={shown.color} bold>
-          {shown.text}
+        <Text color={status.color} bold>
+          {current.phase === 'rest' ? '○ Resting' : status.head}
         </Text>
       )
     } else {
       const { Svg } = $.ui.resolve(e)
       creature = (
         <Svg
-          source={portrait(look, width)}
+          source={portrait({ ...look, gesture: 'write' }, width)}
           alt={`Ember, a small flame. ${caption(look)}`}
           width={width}
           height={Math.round(width * 0.9)}
@@ -670,7 +856,7 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column" alignItems="center" rowGap={1} paddingX={1}>
         {creature}
-        <Text dimColor>{caption(look)}</Text>
+        <Text dimColor>{crew.length > 0 && current.phase === 'work' ? `${plural(crew.length, 'agent')} at work.` : caption(look)}</Text>
         {held === null ? (
           entry
         ) : (

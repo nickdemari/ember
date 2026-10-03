@@ -23,21 +23,22 @@ In the terminal Ember lives in the chat itself:
 
 ```
 ✳ Reading login.ts… (4s · ↓ 146 tokens)
-(•ᴗ•)⟳  ▸ Ship the login fix · 12m  ● 3 steps
+● Working  3 steps  ▸ Ship the login fix  12m
 ```
 
 - **The spinner line says what Claude is doing**, in plain words, where it would say "Pontificating".
-- **The band above the prompt is the creature's home.** A small face that sleeps until you prompt, moves while Claude works, asks `?` on a side quest and waves when it's your move, beside what you asked (or your focus) and whose move it is.
+- **The band above the prompt says whose move it is**, then what you asked or your focus: `● Working`, `● 2 agents working`, `▲ Needs your OK: Bash`, `◆ Your move · 2m`. Nothing on it moves or counts seconds.
+- **Subagents count as work.** While agents run, the band says so and the spinner line quotes their latest step. "Your move" and the chime wait until the last one has reported.
 - **Side quests and nudges are lines in the transcript**, where you'll see them when you come back. The model never reads them.
 
-In the desktop app the same band is joined by a pane with the animated flame above, which grows the more turns you stay on one focus.
+In the desktop app the same band is joined by a pane with the animated flame above. It sleeps until you prompt, wakes while Claude works, bounces when Claude is blocked on you, and grows the more turns you stay on one focus.
 
 Everywhere:
 
 - **`/ember <the one thing>`** pins a focus. `/ember done` finishes it with a small celebration, `/ember drop` clears it, `/ember mute` and `/ember unmute` switch the chimes. `/ember` alone opens the pane.
 - **`/park <thought>`** saves a stray thought without derailing the turn. `/park` lists them, `/park clear` empties the lot, and one press in the pane turns a parked thought into the next focus.
 - **Chimes.** One when a turn of 20 seconds or more finishes, one when a question or permission prompt has sat for 10 seconds.
-- **Side-quest check.** With a focus set, each typed prompt of 24 or more characters gets one small Haiku call. A prompt that clearly leaves the focus is flagged in the band, on the creature and in the transcript. It never blocks the prompt.
+- **Side-quest check.** With a focus set, each typed prompt of 24 or more characters gets one small Haiku call. A prompt that clearly leaves the focus is flagged in the band, on the flame and in the transcript. It never blocks the prompt.
 - **Idle nudge.** One chime five minutes after a turn ends unanswered, once.
 
 Parked thoughts and the mute setting are kept between sessions. Everything else lives for the session.
