@@ -1,7 +1,7 @@
 import type { EmberMood } from '../types'
 
-/** What the creature is drawn from: its mood, how hot the streak runs (0-3), and whether the last prompt left the focus. */
-export type Look = EmberMood & { heat: number; isDrifting?: boolean }
+/** What the creature is drawn from: its mood, and how hot the stretch of work runs (0-3). */
+export type Look = EmberMood & { heat: number }
 
 type Palette = readonly [top: string, mid: string, bottom: string]
 
@@ -14,7 +14,6 @@ const PALETTES: readonly [Palette, Palette, Palette, Palette] = [
 const SCALES = [0.86, 0.94, 1, 1.06] as const
 const INK = '#40200F'
 const ALERT = '#FF5D73'
-const DOUBT = '#E8B931'
 const EASE = '0.4 0 0.6 1'
 
 // The flame and its core, each as three poses the tip sways between. Cubic
@@ -36,13 +35,12 @@ const TEMPO = {
   work: { flicker: 1.8, breath: 2.2, halo: 2.4 },
   blocked: { flicker: 0.8, breath: 0.9, halo: 0.7 },
   done: { flicker: 3.2, breath: 3.6, halo: 4 },
-  cheer: { flicker: 0.6, breath: 0.55, halo: 0.5 },
 } as const
 
 const loop = (attribute: string, values: readonly string[], seconds: number, extra = '') =>
   `<animate attributeName="${attribute}" values="${values.join(';')}" dur="${seconds}s" repeatCount="indefinite" ${extra}/>`
 
-const move = (type: 'translate' | 'scale' | 'rotate', values: readonly string[], seconds: number, extra = '') =>
+const move = (type: 'translate' | 'scale', values: readonly string[], seconds: number, extra = '') =>
   `<animateTransform attributeName="transform" type="${type}" values="${values.join(';')}" dur="${seconds}s" repeatCount="indefinite" ${extra}/>`
 
 const eased = (steps: number) =>
@@ -54,10 +52,6 @@ const sway = (poses: readonly [string, string, string], seconds: number) =>
 const eye = (cx: number, { phase }: Look) => {
   if (phase === 'rest') {
     return `<path d="M${cx - 6} 117 Q${cx} 122 ${cx + 6} 117" stroke="${INK}" stroke-width="3" stroke-linecap="round" fill="none"/>`
-  }
-
-  if (phase === 'cheer') {
-    return `<path d="M${cx - 6} 120 Q${cx} 110 ${cx + 6} 120" stroke="${INK}" stroke-width="3.2" stroke-linecap="round" fill="none"/>`
   }
 
   const isWide = phase === 'blocked'
@@ -72,33 +66,14 @@ const eye = (cx: number, { phase }: Look) => {
   )
 }
 
-const gaze = ({ phase, gesture }: Look) => {
-  if (phase !== 'work') {
-    return ''
-  }
-
-  if (gesture === 'think') {
-    return move('translate', ['0 0', '3 -4', '3 -4', '0 0', '0 0'], 4, `keyTimes="0;0.2;0.6;0.8;1" ${eased(4)}`)
-  }
-
-  if (gesture === 'read') {
-    return move('translate', ['-4 1', '4 1', '-4 1'], 1.6, eased(2))
-  }
-
-  if (gesture === 'write') {
-    return move('translate', ['0 3', '-2 3', '2 3', '0 3'], 1.2, eased(3))
-  }
-
-  return ''
-}
+// While Claude works the eyes move over the page. One look for all of it: a look per kind
+// of step would restart the animation on every tool call.
+const gaze = ({ phase }: Look) =>
+  phase === 'work' ? move('translate', ['0 3', '-2 3', '2 3', '0 3'], 1.2, eased(3)) : ''
 
 const mouth = ({ phase }: Look) => {
   if (phase === 'blocked') {
     return `<circle cx="100" cy="134" r="3.6" fill="${INK}"/>`
-  }
-
-  if (phase === 'cheer') {
-    return `<path d="M90 129 Q100 145 110 129 Z" fill="${INK}"/>`
   }
 
   const curve =
@@ -107,20 +82,8 @@ const mouth = ({ phase }: Look) => {
   return `<path d="${curve}" stroke="${INK}" stroke-width="2.6" stroke-linecap="round" fill="none"/>`
 }
 
-const bubble = (glyph: string, fill: string, seconds: number) =>
-  '<g>' +
-  `<circle cx="160" cy="44" r="15" fill="${fill}"/>` +
-  `<text x="160" y="51.5" text-anchor="middle" font-family="system-ui,-apple-system,sans-serif" font-size="21" font-weight="800" fill="#fff">${glyph}</text>` +
-  move('translate', ['0 0', '0 -5', '0 0'], seconds, eased(2)) +
-  '</g>'
-
-/** Whether the creature is asking if this is still the one thing: only while awake and not otherwise occupied. */
-const isDoubting = ({ phase, isDrifting }: Look) => isDrifting === true && (phase === 'work' || phase === 'done')
-
 /** What floats around the creature: the one thing that tells the moods apart at a glance. */
-const aura = (look: Look, [top, mid]: Palette) => {
-  const { phase, gesture } = look
-
+const aura = ({ phase }: Look, [top, mid]: Palette) => {
   if (phase === 'rest') {
     const z = (x: number, y: number, size: number, begin: number) =>
       `<text x="${x}" y="${y}" font-family="system-ui,-apple-system,sans-serif" font-size="${size}" font-weight="700" fill="${mid}" opacity="0">z` +
@@ -132,11 +95,13 @@ const aura = (look: Look, [top, mid]: Palette) => {
   }
 
   if (phase === 'blocked') {
-    return bubble('!', ALERT, 0.6)
-  }
-
-  if (isDoubting(look)) {
-    return bubble('?', DOUBT, 1.8)
+    return (
+      '<g>' +
+      `<circle cx="160" cy="44" r="15" fill="${ALERT}"/>` +
+      '<text x="160" y="51.5" text-anchor="middle" font-family="system-ui,-apple-system,sans-serif" font-size="21" font-weight="800" fill="#fff">!</text>' +
+      move('translate', ['0 0', '0 -5', '0 0'], 0.6, eased(2)) +
+      '</g>'
+    )
   }
 
   if (phase === 'done') {
@@ -149,50 +114,14 @@ const aura = (look: Look, [top, mid]: Palette) => {
     )
   }
 
-  if (phase === 'cheer') {
-    return Array.from({ length: 10 }, (_, index) => {
-      const angle = (index / 10) * Math.PI * 2
-      const [x, y] = [100 + Math.cos(angle) * 88, 100 + Math.sin(angle) * 80]
-      const begin = `begin="${(index % 2) * 0.18}s"`
+  // Sparks rise off it while Claude works.
+  const spark = (x: number, begin: number) =>
+    `<circle cx="${x}" cy="40" r="3" fill="${top}" opacity="0">` +
+    loop('cy', ['40', '4'], 1.1, `begin="${begin}s"`) +
+    loop('opacity', ['1', '0'], 1.1, `begin="${begin}s"`) +
+    '</circle>'
 
-      return (
-        `<circle cx="100" cy="100" r="4.5" fill="${index % 3 === 0 ? '#fff3b0' : index % 3 === 1 ? top : mid}" opacity="0">` +
-        loop('cx', ['100', x.toFixed(1)], 0.9, begin) +
-        loop('cy', ['100', y.toFixed(1)], 0.9, begin) +
-        loop('opacity', ['1', '0'], 0.9, begin) +
-        loop('r', ['4.5', '1.5'], 0.9, begin) +
-        '</circle>'
-      )
-    }).join('')
-  }
-
-  if (gesture === 'think') {
-    const dot = (x: number, y: number, r: number, begin: number) =>
-      `<circle cx="${x}" cy="${y}" r="${r}" fill="${mid}" opacity="0.15">${loop('opacity', ['0.15', '1', '0.15'], 1.5, `begin="${begin}s"`)}</circle>`
-
-    return dot(136, 60, 3, 0) + dot(148, 46, 4.2, 0.25) + dot(163, 31, 5.5, 0.5)
-  }
-
-  if (gesture === 'write') {
-    const spark = (x: number, begin: number) =>
-      `<circle cx="${x}" cy="40" r="3" fill="${top}" opacity="0">` +
-      loop('cy', ['40', '4'], 1.1, `begin="${begin}s"`) +
-      loop('opacity', ['1', '0'], 1.1, `begin="${begin}s"`) +
-      '</circle>'
-
-    return spark(80, 0) + spark(104, 0.3) + spark(124, 0.6) + spark(92, 0.85)
-  }
-
-  if (gesture === 'run') {
-    return (
-      '<g transform="translate(100 112)">' +
-      `<circle r="66" fill="none" stroke="${mid}" stroke-width="3.5" stroke-linecap="round" stroke-dasharray="18 34" opacity="0.75">` +
-      move('rotate', ['0', '360'], 2.6) +
-      '</circle></g>'
-    )
-  }
-
-  return ''
+  return spark(80, 0) + spark(104, 0.3) + spark(124, 0.6) + spark(92, 0.85)
 }
 
 const clampHeat = (heat: number) => Math.max(0, Math.min(3, Math.round(heat)))
@@ -208,10 +137,8 @@ export const portrait = (look: Look, width: number): string => {
   const scale = SCALES[heat] ?? 1
   const [top, mid, bottom] = palette
   const tempo = TEMPO[look.phase]
-  const isBouncing = look.phase === 'blocked' || look.phase === 'cheer'
-  // The run ring circles the body, so it is the one aura drawn behind it.
-  const isRinged = look.phase === 'work' && look.gesture === 'run' && !isDoubting(look)
-  const glow = look.phase === 'blocked' ? ALERT : mid
+  const isBouncing = look.phase === 'blocked'
+  const glow = isBouncing ? ALERT : mid
   const halo =
     look.phase === 'rest'
       ? ['0.2', '0.32', '0.2']
@@ -220,12 +147,9 @@ export const portrait = (look: Look, width: number): string => {
         : look.phase === 'done'
           ? ['0.55', '0.75', '0.55']
           : ['0.45', '1', '0.45']
-  const bounce =
-    look.phase === 'blocked'
-      ? move('translate', ['0 0', '0 -16', '0 0', '0 -5', '0 0'], 0.9, `keyTimes="0;0.3;0.6;0.8;1" ${eased(4)}`)
-      : look.phase === 'cheer'
-        ? move('translate', ['0 0', '0 -22', '0 0'], 0.55, eased(2))
-        : ''
+  const bounce = isBouncing
+    ? move('translate', ['0 0', '0 -16', '0 0', '0 -5', '0 0'], 0.9, `keyTimes="0;0.3;0.6;0.8;1" ${eased(4)}`)
+    : ''
   const breath =
     look.phase === 'blocked' ? ['1 1', '0.96 1.05', '1 1'] : look.phase === 'rest' ? ['1 1', '1.02 0.975', '1 1'] : ['1 1', '1.035 0.968', '1 1']
 
@@ -236,8 +160,7 @@ export const portrait = (look: Look, width: number): string => {
     `<radialGradient id="halo"><stop offset="0" stop-color="${glow}" stop-opacity="0.6"/><stop offset="0.6" stop-color="${glow}" stop-opacity="0.16"/><stop offset="1" stop-color="${glow}" stop-opacity="0"/></radialGradient>` +
     '</defs>' +
     `<circle cx="100" cy="108" r="86" fill="url(#halo)">${loop('opacity', halo, tempo.halo, eased(2))}</circle>` +
-    `<ellipse cx="100" cy="168" rx="38" ry="5" fill="#000" opacity="0.14">${isBouncing ? loop('rx', ['38', '26', '38'], look.phase === 'cheer' ? 0.55 : 0.9) : ''}</ellipse>` +
-    (isRinged ? aura(look, palette) : '') +
+    `<ellipse cx="100" cy="168" rx="38" ry="5" fill="#000" opacity="0.14">${isBouncing ? loop('rx', ['38', '26', '38'], 0.9) : ''}</ellipse>` +
     `<g>${bounce}` +
     `<g transform="translate(100 160)"><g transform="scale(${scale})"><g>${move('scale', breath, tempo.breath, eased(2))}<g transform="translate(-100 -160)" opacity="${look.phase === 'rest' ? 0.82 : 1}">` +
     `<path d="${FLAME[0]}" fill="url(#flame)">${sway(FLAME, tempo.flicker)}</path>` +
@@ -246,19 +169,13 @@ export const portrait = (look: Look, width: number): string => {
     `<g>${gaze(look)}${eye(86, look)}${eye(114, look)}</g>` +
     mouth(look) +
     '</g></g></g></g></g>' +
-    (isRinged ? '' : aura(look, palette)) +
+    aura(look, palette) +
     '</svg>'
   )
 }
 
 /** One line under the creature, and what a reader that cannot see it is told. */
-export const caption = (look: Look): string => {
-  const { phase, gesture } = look
-
-  if (isDoubting(look)) {
-    return 'Side quest? Your focus is waiting.'
-  }
-
+export const caption = ({ phase, gesture }: Look): string => {
   if (phase === 'rest') {
     return 'Resting. Ready when you are.'
   }
@@ -269,10 +186,6 @@ export const caption = (look: Look): string => {
 
   if (phase === 'done') {
     return 'Your move.'
-  }
-
-  if (phase === 'cheer') {
-    return 'Done. Nice.'
   }
 
   const work = {

@@ -1,5 +1,5 @@
-/** What Ember is doing: asleep, watching Claude work, waiting on you now, your move, or celebrating. */
-export type EmberPhase = 'rest' | 'work' | 'blocked' | 'done' | 'cheer'
+/** What Ember is doing: asleep, watching Claude work, waiting on you now, or your move. */
+export type EmberPhase = 'rest' | 'work' | 'blocked' | 'done'
 
 /** How it watches while Claude works. */
 export type EmberGesture = 'think' | 'read' | 'write' | 'run'
@@ -13,21 +13,15 @@ export type EmberLive = { label: string; since: number; tools: number; isNudged?
 /** A subagent at work: its id, what it was sent to do, and the step it is on. */
 export type EmberAgent = { id: string; name: string; label: string }
 
-/** The one thing, when you set one. */
-export type EmberFocus = { text: string; startedAt: number; turns: number }
-
 declare module 'claude-code' {
   interface PluginState {
     ember: {
       mood: EmberMood
       live: EmberLive
       agents: EmberAgent[]
-      focus: EmberFocus | null
       ask: string
-      parked: string[]
       isMuted: boolean
       isBusy: boolean
-      isDrifting: boolean
       now: number
     }
   }

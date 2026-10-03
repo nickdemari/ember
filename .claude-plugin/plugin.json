@@ -1,7 +1,7 @@
 {
   "name": "ember",
-  "version": "0.1.0",
-  "description": "A living focus companion: pins the one thing you're doing, mirrors what Claude is doing, and calls you back when it's your move.",
+  "version": "0.2.0",
+  "description": "Follows what you and Claude are doing: says the step in the spinner line, whose move it is above the prompt, and chimes when it's yours.",
   "types": "./types/index.d.ts",
   "author": {
     "name": "Nick Demari"

@@ -1,21 +1,6 @@
 # Ember
 
-A Claude Code mod that keeps you on the one thing. Built for an ADD brain: a small flame watches Claude work, a band above the prompt says what you asked and whose move it is, and a chime calls you back when you've wandered off.
-
-<table align="center">
-  <tr>
-    <td align="center"><img src="docs/rest.svg" width="120" alt="Ember asleep"><br><sub>asleep</sub></td>
-    <td align="center"><img src="docs/think.svg" width="120" alt="Ember while Claude thinks"><br><sub>thinking</sub></td>
-    <td align="center"><img src="docs/write.svg" width="120" alt="Ember while Claude writes"><br><sub>writing</sub></td>
-    <td align="center"><img src="docs/run.svg" width="120" alt="Ember while Claude runs things"><br><sub>running</sub></td>
-  </tr>
-  <tr>
-    <td align="center"><img src="docs/blocked.svg" width="120" alt="Ember when Claude is waiting on you"><br><sub>needs you</sub></td>
-    <td align="center"><img src="docs/side-quest.svg" width="120" alt="Ember asking whether this is a side quest"><br><sub>side quest?</sub></td>
-    <td align="center"><img src="docs/done.svg" width="120" alt="Ember when it is your move"><br><sub>your move</sub></td>
-    <td align="center"><img src="docs/cheer.svg" width="120" alt="Ember celebrating a finished focus"><br><sub>done</sub></td>
-  </tr>
-</table>
+A Claude Code mod that follows what you and Claude are doing. Built for an ADD brain: nothing to set up and nothing to manage. It says what Claude is doing right now, whose move it is, and calls you back when it's yours.
 
 ## What it does
 
@@ -23,27 +8,37 @@ Ember lives in the chat itself. In the terminal:
 
 ```
 ✳ Reading login.ts… (4s · ↓ 146 tokens)
-● Working  3 steps  ▸ Ship the login fix  12m
+● Working  3 steps
+```
+
+and once Claude is done:
+
+```
+◆ Your move  2m  You asked: fix the flaky login test
 ```
 
 - **The spinner line says what Claude is doing**, in plain words, where it would say "Pontificating".
-- **The band above the prompt says whose move it is**, then what you asked or your focus: `● Working`, `● 2 agents working`, `▲ Needs your OK: Bash`, `◆ Your move · 2m`. Nothing on it moves or counts seconds.
+- **The band above the prompt says whose move it is:** `● Working`, `● 2 agents working`, `▲ Needs your OK: Bash`, `◆ Your move`. When it's your move it also shows what you last asked, for when you come back to it. Nothing on it moves or counts seconds.
 - **Subagents count as work.** While agents run, the band says so and the spinner line quotes their latest step. "Your move" and the chime wait until the last one has reported.
-- **Side quests and nudges are lines in the transcript**, where you'll see them when you come back. The model never reads them.
+- **Chimes.** One when work of 20 seconds or more finishes, one when a question or permission prompt has sat for 10 seconds.
+- **Idle nudge.** Five minutes after Claude finishes with no reply from you: one chime and one line in the transcript, once. The model never reads that line.
 
-The desktop app gets the same band and transcript lines; there the band also says the step, since the spinner row already does its own narrating.
+The desktop app gets the same band and transcript line; there the band also says the step, since the spinner row already does its own narrating.
 
-Nothing opens by itself, and `/ember` on its own answers in the chat with where your focus stands. `/ember pane` opens a pane with your focus, parked thoughts and the sound switch, and in the desktop app the animated flame above: it sleeps until you prompt, wakes while Claude works, bounces when Claude is blocked on you, and grows the more turns you stay on one focus.
+Commands, all optional:
 
-Everywhere:
+- `/ember` says it's following and whether sound is on.
+- `/ember mute` and `/ember unmute` switch the chimes. The setting is kept between sessions.
+- `/ember pane` opens a pane. In the desktop app it shows an animated flame that sleeps until you prompt, wakes while Claude works, bounces when Claude is blocked on you, and grows through a long stretch of work.
 
-- **`/ember <the one thing>`** pins a focus. `/ember done` finishes it with a small celebration, `/ember drop` clears it, `/ember mute` and `/ember unmute` switch the chimes. `/ember` alone says where things stand.
-- **`/park <thought>`** saves a stray thought without derailing the turn. `/park` lists them, `/park clear` empties the lot, and one press in the pane turns a parked thought into the next focus.
-- **Chimes.** One when a turn of 20 seconds or more finishes, one when a question or permission prompt has sat for 10 seconds.
-- **Side-quest check.** With a focus set, each typed prompt of 24 or more characters gets one small Haiku call. A prompt that clearly leaves the focus is flagged in the band, on the flame and in the transcript. It never blocks the prompt.
-- **Idle nudge.** One chime five minutes after a turn ends unanswered, once.
-
-Parked thoughts and the mute setting are kept between sessions. Everything else lives for the session.
+<table align="center">
+  <tr>
+    <td align="center"><img src="docs/rest.svg" width="120" alt="Ember asleep"><br><sub>asleep</sub></td>
+    <td align="center"><img src="docs/work.svg" width="120" alt="Ember while Claude works"><br><sub>working</sub></td>
+    <td align="center"><img src="docs/blocked.svg" width="120" alt="Ember when Claude is waiting on you"><br><sub>needs you</sub></td>
+    <td align="center"><img src="docs/done.svg" width="120" alt="Ember when it is your move"><br><sub>your move</sub></td>
+  </tr>
+</table>
 
 ## Loading it
 
@@ -78,7 +73,7 @@ claude plugin test .
 - `hooks/creature.ts`: the flame as one SMIL-animated SVG per mood, and the caption beside it.
 - `hooks/narrate.ts`: tool calls in plain words.
 - `types/index.d.ts`: the state contract.
-- `fx/`: the two chimes.
+- `fx/`: the chime.
 
 ## License
 

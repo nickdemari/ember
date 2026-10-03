@@ -2,7 +2,6 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-const SURFACES = ['terminal', 'desktop', 'vscode', 'mobile'] as const
 const START = 1_700_000_000_000
 
 const BAND = {
@@ -32,12 +31,27 @@ const PANE = {
   },
 } as const
 
+const SPINNER = {
+  plugin: 'ember',
+  component: 'Spinner',
+  props: { word: 'Pontificating', message: null, suffix: '…', mode: 'tool-use' },
+} as const
+
+const SPAWN = {
+  tool_use_id: 'spawn-1',
+  prompt: 'Find where the session token is refreshed.',
+  description: 'Trace the token refresh',
+  subagentType: 'general-purpose',
+  provider: { plugin: 'engine', tier: 'core' },
+  parentModel: 'haiku',
+  background: true,
+  fork: false,
+} as const
+
 /** The engine beneath the mod: a clock and a store in memory, and every other call it makes answered. */
 const world = (on: On) => {
   const clock = mock.clock(on, { now: START })
   const played: string[] = []
-  const toasts: string[] = []
-  const judged: string[] = []
   const logs: string[] = []
   const spun: string[] = []
   const opened: string[] = []
@@ -47,22 +61,11 @@ const world = (on: On) => {
   mock.store(on)
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('command.register', (_$, e) => ({ value: { command: e.name } }))
+  on('ui.panes', () => ({ value: [] }))
   on('ui.open', (_$, e) => {
     opened.push(e.id)
 
     return { value: { isPlaced: true as const } }
-  })
-  on('agent.list', () => ({ value: roster }))
-  on('agent.spawn', (_$, e) => {
-    const agentId = `agent-${roster.length + 1}`
-    roster.push({ id: agentId, description: e.description, type: e.subagentType, status: 'running' })
-
-    return { model: 'haiku', agentId }
-  })
-  on('ui.toast', (_$, e) => {
-    toasts.push(e.text)
-
-    return { value: undefined }
   })
   on('ui.log', (_$, e) => {
     logs.push(e.text)
@@ -74,17 +77,12 @@ const world = (on: On) => {
 
     return { value: undefined }
   })
-  // The judge's model: only a request about the settings page leaves the focus.
-  on('model.complete', (_$, e) => {
-    judged.push(e.prompt)
+  on('agent.list', () => ({ value: roster }))
+  on('agent.spawn', (_$, e) => {
+    const agentId = `agent-${roster.length + 1}`
+    roster.push({ id: agentId, description: e.description, type: e.subagentType, status: 'running' })
 
-    return {
-      value: {
-        isAnswered: true as const,
-        text: e.prompt.includes('settings page') ? 'DIFFERENT' : 'SAME',
-        usage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
-      },
-    }
+    return { model: 'haiku', agentId }
   })
   // What the engine draws where the mod passes: nothing. The spinner's word is kept as it arrived.
   on('ui.render', ($, e) => {
@@ -100,195 +98,108 @@ const world = (on: On) => {
   on('turn.complete', (_$, e) => ({ text: e.answer }))
   on('tool.call', () => ({ result: 'ok' }))
 
-  return { clock, played, toasts, judged, logs, spun, opened, roster }
+  return { clock, played, logs, spun, opened, roster }
 }
 
-const begin = ($: Engine) => $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true })
+const begin = ($: Engine) => $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+const typed = ($: Engine, text: string) => $.prompt.submit({ text, wait: false, origin: { kind: 'composer' } })
+const answered = ($: Engine, turnId: string) =>
+  $.turn.complete({ answer: 'done', durationMs: 1000, isAborted: false, turnId, reason: 'answer' })
 
-test('before the first prompt the band is one dim line saying how to set a focus, and no pane opens', async ($, on) => {
+test('nothing to set up: before the first prompt the band is one dim word and no pane opens', async ($, on) => {
   const { opened } = world(on)
   await begin($)
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...BAND, surface })
-    expect(await ui.find({ text: /\/ember <the one thing> sets a focus/ })).toBeDefined()
+    expect(await ui.find({ text: '○ ember' })).toBeDefined()
     await ui.unmount()
   }
 
   expect(opened).toEqual([])
 })
 
-test('a turn is narrated on every surface that has a band, and ends as your move', async ($, on) => {
-  const { clock, played } = world(on)
+test('it follows a turn: the spinner says the step, the band says whose move, then what he asked', async ($, on) => {
+  const { clock, played, spun } = world(on)
   await begin($)
-  await $.prompt.submit({ text: 'fix the flaky login test', wait: false, origin: { kind: 'composer' } })
+  await typed($, 'fix the flaky login test')
   await $.turn.start({ text: 'fix the flaky login test', turnId: 't1' })
 
-  for (const surface of ['terminal', 'desktop'] as const) {
-    const ui = await $.ui.mount({ ...BAND, surface })
-    expect(await ui.find({ text: /You asked: fix the flaky login test/ })).toBeDefined()
-    // The desktop band says the step; the terminal's leaves it to the spinner line.
-    expect(await ui.find({ text: surface === 'terminal' ? /● Working/ : /● Thinking/ })).toBeDefined()
-    await ui.unmount()
-  }
+  const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  const spinner = await $.ui.mount({ ...SPINNER, surface: 'terminal' })
+  expect(await band.find({ text: '● Working' })).toBeDefined()
+  // While Claude works the band does not repeat the prompt he typed a line above.
+  expect(await band.find({ text: /You asked/ })).toBeUndefined()
 
   const call = $.tool.call({ tool: 'Read', tool_use_id: 'u1', file_path: '/src/auth/login.ts' })
-  await clock.advance(3000)
+  await clock.settle()
+  expect(spun.at(-1)).toBe('Reading login.ts')
   await call
-  await clock.advance(28_000)
+  await clock.advance(31_000)
 
-  await $.turn.complete({ answer: 'done', durationMs: 31_000, isAborted: false, turnId: 't1', reason: 'answer' })
-
-  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect(await ui.find({ text: /Your move/ })).toBeDefined()
-  await ui.unmount()
-
+  await answered($, 't1')
+  expect(await band.find({ text: '◆ Your move' })).toBeDefined()
+  expect(await band.find({ text: 'You asked: fix the flaky login test' })).toBeDefined()
   // Work long enough to have wandered off from gets the chime.
   expect(played).toEqual(['fx/chime.wav'])
+
+  await spinner.unmount()
+  await band.unmount()
 })
 
-test('the pane draws the creature the surface can draw, with a way to set the one thing', async ($, on) => {
+test('the desktop band says the step itself, since its spinner row is left alone', async ($, on) => {
   world(on)
   await begin($)
+  await $.turn.start({ text: 'go', turnId: 't1' })
 
-  for (const surface of SURFACES) {
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await band.find({ text: '● Thinking' })).toBeDefined()
+  await band.unmount()
+})
+
+test('/ember answers in the chat; the pane is asked for by name and draws on every surface', async ($, on) => {
+  const { opened } = world(on)
+  await begin($)
+
+  const run = (args: string) =>
+    $.command.run({ command: 'ember', args, origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 170 } })
+
+  expect((await run('')).text).toMatch(/following this session/)
+  expect(opened).toEqual([])
+  expect((await run('mute')).text).toBe('Ember is muted.')
+
+  await run('pane')
+  expect(opened).toEqual(['ember'])
+
+  for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    const creature = await ui.find({ type: surface === 'terminal' ? 'Text' : 'Svg' })
-    expect(creature).toBeDefined()
-    expect(await ui.find({ key: 'sound' })).toBeDefined()
-    expect(await ui.find({ type: 'Input' }) !== undefined).toBe(surface !== 'mobile')
+    expect(await ui.find({ type: surface === 'terminal' ? 'Text' : 'Svg' })).toBeDefined()
+    expect((await ui.find({ key: 'sound' }))?.props.label).toBe('Sound is off')
     await ui.unmount()
   }
 })
 
-test('setting, working on and finishing the one thing', async ($, on) => {
-  const { clock, played, logs } = world(on)
-  await begin($)
-
-  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await ui.input({ key: 'one-thing', text: 'Ship the login fix' })
-  expect(await ui.find({ text: 'Ship the login fix' })).toBeDefined()
-  expect(await ui.find({ type: 'Input' })).toBeUndefined()
-
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect(await band.find({ text: /▸ Ship the login fix/ })).toBeDefined()
-
-  await ui.press({ key: 'done' })
-  expect(await ui.find({ type: 'Input' })).toBeDefined()
-  expect(played).toEqual(['fx/win.wav'])
-  expect(logs.some(line => line.startsWith('★ Done: Ship the login fix'))).toBe(true)
-  expect((await ui.find({ type: 'Svg' }))?.props.alt).toMatch(/Done\. Nice\./)
-
-  await clock.advance(5000)
-  expect((await ui.find({ type: 'Svg' }))?.props.alt).toMatch(/Your move/)
-  await band.unmount()
-  await ui.unmount()
-})
-
-test('a parked thought is kept, shown, and can become the focus', async ($, on) => {
-  const { toasts } = world(on)
-  await begin($)
-
-  const parked = await $.command.run({
-    command: 'park',
-    args: 'rename the auth module',
-    origin: { kind: 'composer' },
-    presentation: { isFullscreen: true, columns: 120 },
-  })
-  // The thought stays out of the row the model reads.
-  expect(parked.text).toBe('Parked (1).')
-  expect(toasts.some(toast => toast.includes('rename the auth module'))).toBe(true)
-
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await ui.press({ key: 'parked-0' })
-  expect(await ui.find({ text: 'rename the auth module' })).toBeDefined()
-  expect(await ui.find({ key: 'parked-0' })).toBeUndefined()
-  await ui.unmount()
-})
-
-test('a question for him turns the creature and chimes if it stands', async ($, on) => {
+test('a permission prompt turns it to him and chimes if it stands', async ($, on) => {
   const { clock, played } = world(on)
   await begin($)
   await $.turn.start({ text: 'go', turnId: 't1' })
 
-  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  const asked = $.classic.PermissionRequest({ tool_name: 'Bash', tool_input: { command: 'rm -rf build' } })
-  await asked
-  expect((await ui.find({ type: 'Svg' }))?.props.alt).toMatch(/waiting on you/)
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await $.classic.PermissionRequest({ tool_name: 'Bash', tool_input: { command: 'rm -rf build' } })
+  expect(await band.find({ text: '▲ Needs your OK: Bash' })).toBeDefined()
 
   await clock.advance(11_000)
   expect(played).toEqual(['fx/chime.wav'])
 
   // Nothing says when he answered: past the decay it stops insisting.
   await clock.advance(30_000)
-  expect((await ui.find({ type: 'Svg' }))?.props.alt).toMatch(/Claude is/)
-  await ui.unmount()
-})
-
-const typed = ($: Engine, text: string) => $.prompt.submit({ text, wait: false, origin: { kind: 'composer' } })
-const answered = ($: Engine, turnId: string) =>
-  $.turn.complete({ answer: 'done', durationMs: 1000, isAborted: false, turnId, reason: 'answer' })
-
-test('a prompt that leaves the focus is flagged, and does not feed the flame', async ($, on) => {
-  const { clock, logs, judged } = world(on)
-  await begin($)
-
-  const pane = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await pane.input({ key: 'one-thing', text: 'Ship the login fix' })
-
-  // On the focus: judged, not flagged, and the turn counts.
-  await typed($, 'add a test for the expired token case')
-  await clock.advance(10)
-  await $.turn.start({ text: 'add a test', turnId: 't1' })
-  await answered($, 't1')
-  expect(await pane.find({ text: '1 turn on it' })).toBeDefined()
-
-  // A short reply is never sent to the judge.
-  await typed($, 'yes, do it')
-  await clock.advance(10)
-  expect(judged).toHaveLength(1)
-
-  // Off the focus: flagged in the band, on the creature and in a line of the chat; the turn does not count.
-  await typed($, 'also redesign the settings page while you are in there')
-  await clock.advance(10)
-  await $.turn.start({ text: 'settings', turnId: 't2' })
-
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect(await band.find({ text: /Side quest\?/ })).toBeDefined()
-  expect((await pane.find({ type: 'Svg' }))?.props.alt).toMatch(/Side quest\?/)
-  expect(logs.some(line => line.includes('Side quest?') && line.includes('Ship the login fix'))).toBe(true)
-
-  await answered($, 't2')
-  expect(await pane.find({ text: '1 turn on it' })).toBeDefined()
-
-  // The next prompt on the focus clears it.
-  await typed($, 'back to it: why does the refresh token fail?')
-  await clock.advance(10)
-  expect(await band.find({ text: /Side quest\?/ })).toBeUndefined()
-
+  expect(await band.find({ text: /▲/ })).toBeUndefined()
   await band.unmount()
-  await pane.unmount()
-})
-
-test('with no focus set nothing is judged', async ($, on) => {
-  const { clock, judged } = world(on)
-  await begin($)
-  await typed($, 'also redesign the settings page while you are in there')
-  await clock.advance(10)
-  expect(judged).toHaveLength(0)
 })
 
 test('his move standing five minutes gets one nudge, then quiet', async ($, on) => {
   const { clock, played, logs } = world(on)
   await begin($)
-
-  const pane = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await pane.input({ key: 'one-thing', text: 'Ship the login fix' })
-
-  // A focus set with no turn behind it is nothing to nudge about.
-  await clock.advance(6 * 60_000)
-  expect(played).toEqual([])
-
   await $.turn.start({ text: 'go', turnId: 't1' })
   await answered($, 't1')
 
@@ -297,81 +208,21 @@ test('his move standing five minutes gets one nudge, then quiet', async ($, on) 
 
   await clock.advance(90_000)
   expect(played).toEqual(['fx/chime.wav'])
-  expect(logs.some(line => line.startsWith('◆ Still on: Ship the login fix?'))).toBe(true)
+  expect(logs.some(line => line.startsWith('◆ Claude finished 5m ago.'))).toBe(true)
 
   await clock.advance(30 * 60_000)
   expect(played).toEqual(['fx/chime.wav'])
-  await pane.unmount()
 })
-
-const SPINNER = {
-  plugin: 'ember',
-  component: 'Spinner',
-  props: { word: 'Pontificating', message: null, suffix: '…', mode: 'tool-use' },
-} as const
-
-test('on the terminal it lives in the chat: no pane unasked, the spinner says the step', async ($, on) => {
-  const { clock, spun, opened } = world(on)
-  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
-  expect(opened).toEqual([])
-
-  // At rest the band is all there is of it, so it says how to set a focus.
-  const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  expect(await band.find({ text: /\/ember <the one thing> sets a focus/ })).toBeDefined()
-
-  // The engine's own word stands until a turn the mod saw start is running.
-  const spinner = await $.ui.mount({ ...SPINNER, surface: 'terminal' })
-  expect(spun.at(-1)).toBe('Pontificating')
-
-  await $.turn.start({ text: 'go', turnId: 't1' })
-  const call = $.tool.call({ tool: 'Read', tool_use_id: 'u1', file_path: '/src/auth/login.ts' })
-  await clock.settle()
-  expect(spun.at(-1)).toBe('Reading login.ts')
-  await call
-
-  // On its own /ember answers in the chat; the pane is asked for by name.
-  const stood = await $.command.run({
-    command: 'ember',
-    args: '',
-    origin: { kind: 'composer' },
-    presentation: { isFullscreen: true, columns: 170 },
-  })
-  expect(stood.text).toMatch(/No focus set/)
-  expect(opened).toEqual([])
-
-  await $.command.run({
-    command: 'ember',
-    args: 'pane',
-    origin: { kind: 'composer' },
-    presentation: { isFullscreen: true, columns: 170 },
-  })
-  expect(opened).toEqual(['ember'])
-
-  await spinner.unmount()
-  await band.unmount()
-})
-
-const SPAWN = {
-  tool_use_id: 'spawn-1',
-  prompt: 'Find where the session token is refreshed.',
-  description: 'Trace the token refresh',
-  subagentType: 'general-purpose',
-  provider: { plugin: 'engine', tier: 'core' },
-  parentModel: 'haiku',
-  background: true,
-  fork: false,
-} as const
 
 test('agents still at work are work, not his move; the chime waits for the last of it', async ($, on) => {
   const { clock, played, spun, roster } = world(on)
-  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  await begin($)
   await $.turn.start({ text: 'look into the token refresh', turnId: 't1' })
   await $.agent.spawn(SPAWN)
 
   const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
   const spinner = await $.ui.mount({ ...SPINNER, surface: 'terminal' })
   expect(await band.find({ text: '● 1 agent working' })).toBeDefined()
-
   // With the main loop only thinking, the spinner line says what its agent is on.
   expect(spun.at(-1)).toBe('Agent: Starting')
 
