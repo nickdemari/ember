@@ -41,7 +41,6 @@ const world = (on: On) => {
   const logs: string[] = []
   const spun: string[] = []
   const opened: string[] = []
-  const surfaces: ('terminal' | 'desktop')[] = ['desktop']
   // The engine's own record of the session's subagents, as `$.agent.list()` answers it.
   const roster: { id: string; description: string; type: string; status: string }[] = []
 
@@ -53,7 +52,6 @@ const world = (on: On) => {
 
     return { value: { isPlaced: true as const } }
   })
-  on('session.surfaces', () => ({ value: surfaces }))
   on('agent.list', () => ({ value: roster }))
   on('agent.spawn', (_$, e) => {
     const agentId = `agent-${roster.length + 1}`
@@ -61,7 +59,6 @@ const world = (on: On) => {
 
     return { model: 'haiku', agentId }
   })
-  on('session.attach', (_$, e) => ({ clientId: e.clientId }))
   on('ui.toast', (_$, e) => {
     toasts.push(e.text)
 
@@ -103,18 +100,22 @@ const world = (on: On) => {
   on('turn.complete', (_$, e) => ({ text: e.answer }))
   on('tool.call', () => ({ result: 'ok' }))
 
-  return { clock, played, toasts, judged, logs, spun, opened, surfaces, roster }
+  return { clock, played, toasts, judged, logs, spun, opened, roster }
 }
 
 const begin = ($: Engine) => $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true })
 
-test('the band stays out of the way until there is something to anchor', async ($, on) => {
-  world(on)
+test('before the first prompt the band is one dim line saying how to set a focus, and no pane opens', async ($, on) => {
+  const { opened } = world(on)
   await begin($)
 
-  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect(await ui.find({ type: 'Text' })).toBeUndefined()
-  await ui.unmount()
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...BAND, surface })
+    expect(await ui.find({ text: /\/ember <the one thing> sets a focus/ })).toBeDefined()
+    await ui.unmount()
+  }
+
+  expect(opened).toEqual([])
 })
 
 test('a turn is narrated on every surface that has a band, and ends as your move', async ($, on) => {
@@ -309,9 +310,8 @@ const SPINNER = {
   props: { word: 'Pontificating', message: null, suffix: '…', mode: 'tool-use' },
 } as const
 
-test('on the terminal the creature lives in the chat: no pane unasked, the spinner says the step', async ($, on) => {
-  const { clock, spun, opened, surfaces } = world(on)
-  surfaces.splice(0, surfaces.length, 'terminal')
+test('on the terminal it lives in the chat: no pane unasked, the spinner says the step', async ($, on) => {
+  const { clock, spun, opened } = world(on)
   await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
   expect(opened).toEqual([])
 
@@ -342,16 +342,6 @@ test('on the terminal the creature lives in the chat: no pane unasked, the spinn
   await band.unmount()
 })
 
-test('a desktop that attaches gets the flame pane without asking', async ($, on) => {
-  const { opened, surfaces } = world(on)
-  surfaces.splice(0, surfaces.length)
-  await $.session.start({ cwd: '/tmp', surface: null, isInteractive: false })
-  expect(opened).toEqual([])
-
-  await $.session.attach({ surface: 'desktop', clientId: 'desktop:default' })
-  expect(opened).toEqual(['ember'])
-})
-
 const SPAWN = {
   tool_use_id: 'spawn-1',
   prompt: 'Find where the session token is refreshed.',
@@ -364,8 +354,7 @@ const SPAWN = {
 } as const
 
 test('agents still at work are work, not his move; the chime waits for the last of it', async ($, on) => {
-  const { clock, played, spun, surfaces, roster } = world(on)
-  surfaces.splice(0, surfaces.length, 'terminal')
+  const { clock, played, spun, roster } = world(on)
   await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
   await $.turn.start({ text: 'look into the token refresh', turnId: 't1' })
   await $.agent.spawn(SPAWN)

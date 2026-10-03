@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, RenderElement, RenderSurface } from 'claude-code'
+import type { EngineInterface, Register, RenderElement } from 'claude-code'
 
 import type { EmberAgent, EmberFocus, EmberGesture, EmberLive, EmberMood, EmberPhase } from '../types'
 import { caption, portrait } from './creature'
@@ -71,7 +71,6 @@ const focus = atom({ plugin: 'ember', key: 'focus' } as const, null)
 const ask = atom({ plugin: 'ember', key: 'ask' } as const, '')
 const parked = atom({ plugin: 'ember', key: 'parked' } as const, [])
 const isMuted = atom({ plugin: 'ember', key: 'isMuted' } as const, false)
-const isClosed = atom({ plugin: 'ember', key: 'isClosed' } as const, false)
 const isBusy = atom({ plugin: 'ember', key: 'isBusy' } as const, false)
 const isDrifting = atom({ plugin: 'ember', key: 'isDrifting' } as const, false)
 const now = atom({ plugin: 'ember', key: 'now' } as const, 0)
@@ -422,23 +421,6 @@ const tick = async ($: EngineInterface): Promise<void> => {
 
 const open = ($: EngineInterface) => $.ui.open({ id: PANE, title: 'Ember' })
 
-/** The surfaces that draw the animated flame, and so get its pane without asking. */
-const hasFlame = (surface: RenderSurface): boolean => surface === 'desktop' || surface === 'vscode'
-
-const greet = async ($: EngineInterface): Promise<void> => {
-  if (await read($, isClosed)) {
-    return
-  }
-
-  void open($)
-    .then(placed => {
-      if (!placed.isPlaced) {
-        $.ui.toast('Ember is here: /ember opens it')
-      }
-    })
-    .catch(() => undefined)
-}
-
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command
@@ -469,31 +451,11 @@ export const register: Register = on => {
     // A reload drops the timer that ends a cheer.
     await update($, mood, was => (was.phase === 'cheer' ? feel('done', 'think') : was))
 
+    // Nothing opens by itself: the mod lives in the chat (the band, the spinner line, lines
+    // of the transcript), and the pane waits for /ember.
     $.clock.every(HEARTBEAT_MS, () => {
       void tick($)
     })
-
-    // On the terminal a docked pane costs half the transcript for a line of text: there
-    // the band and the spinner line are the whole of it, and the pane waits for /ember.
-    if ((await $.session.surfaces()).some(hasFlame)) {
-      await greet($)
-    }
-
-    return next(e)
-  })
-
-  on('session.attach', async ($, e, next) => {
-    if (hasFlame(e.surface)) {
-      await greet($)
-    }
-
-    return next(e)
-  })
-
-  on('ui.close', { id: PANE }, async ($, e, next) => {
-    if (e.origin.kind === 'person') {
-      await update($, isClosed, () => true)
-    }
 
     return next(e)
   })
@@ -525,7 +487,6 @@ export const register: Register = on => {
       return { text: `▸ Locked in: ${clip(args, 120)}` }
     }
 
-    await update($, isClosed, () => false)
     await open($)
 
     const held = await read($, focus)
@@ -740,7 +701,8 @@ export const register: Register = on => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const current = await read($, mood)
     const held = await read($, focus)
-    const isTerminal = e.surface === 'terminal'
+    // Only the terminal's spinner line narrates the step; elsewhere the band says it.
+    const isNarrated = e.surface === 'terminal'
 
     if (e.props.hasSurvey) {
       return next(e)
@@ -748,9 +710,9 @@ export const register: Register = on => {
 
     const { Box, Text } = $.ui.resolve(e)
 
+    // Before the first prompt this line is how he knows it is there.
     if (current.phase === 'rest' && held === null) {
-      // Off the terminal the pane shows the resting flame; on it this line is how he knows it is there.
-      return isTerminal ? <Text dimColor>ember · /ember &lt;the one thing&gt; sets a focus</Text> : next(e)
+      return <Text dimColor>ember · /ember &lt;the one thing&gt; sets a focus</Text>
     }
 
     const step = await read($, live)
@@ -759,7 +721,7 @@ export const register: Register = on => {
     const lot = await read($, parked)
     const asked = await read($, ask)
     const isOff = held !== null && current.phase !== 'cheer' && (await read($, isDrifting))
-    const status = statusOf(current, step, crew, at, await read($, isBusy), isTerminal)
+    const status = statusOf(current, step, crew, at, await read($, isBusy), isNarrated)
     const onIt = held !== null && at - held.startedAt >= 60_000 ? span(at - held.startedAt) : ''
     const goal = held === null ? (asked === '' ? '' : `You asked: ${clip(asked, ASK_SHOWN)}`) : `▸ ${held.text}`
 
@@ -804,8 +766,8 @@ export const register: Register = on => {
     )
   })
 
-  // The companion. It reads the mood and never the clock, and its flame is drawn from the
-  // phase alone, so the animation restarts when the phase changes and at no other time.
+  // The companion, opened by /ember. It reads the mood and never the clock, and its flame is drawn
+  // from the phase alone, so the animation restarts when the phase changes and at no other time.
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const current = await read($, mood)
     const held = await read($, focus)

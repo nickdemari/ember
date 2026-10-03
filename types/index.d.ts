@@ -26,7 +26,6 @@ declare module 'claude-code' {
       ask: string
       parked: string[]
       isMuted: boolean
-      isClosed: boolean
       isBusy: boolean
       isDrifting: boolean
       now: number

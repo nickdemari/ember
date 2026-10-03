@@ -19,7 +19,7 @@ A Claude Code mod that keeps you on the one thing. Built for an ADD brain: a sma
 
 ## What it does
 
-In the terminal Ember lives in the chat itself:
+Ember lives in the chat itself. In the terminal:
 
 ```
 ✳ Reading login.ts… (4s · ↓ 146 tokens)
@@ -31,7 +31,9 @@ In the terminal Ember lives in the chat itself:
 - **Subagents count as work.** While agents run, the band says so and the spinner line quotes their latest step. "Your move" and the chime wait until the last one has reported.
 - **Side quests and nudges are lines in the transcript**, where you'll see them when you come back. The model never reads them.
 
-In the desktop app the same band is joined by a pane with the animated flame above. It sleeps until you prompt, wakes while Claude works, bounces when Claude is blocked on you, and grows the more turns you stay on one focus.
+The desktop app gets the same band and transcript lines; there the band also says the step, since the spinner row already does its own narrating.
+
+Nothing opens by itself. `/ember` on its own opens a pane with your focus, parked thoughts and the sound switch, and in the desktop app the animated flame above: it sleeps until you prompt, wakes while Claude works, bounces when Claude is blocked on you, and grows the more turns you stay on one focus.
 
 Everywhere:
 
