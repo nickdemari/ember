@@ -73,7 +73,7 @@ claude plugin test .
 ## Layout
 
 - `hooks/register.tsx`: every hook, the band and the pane.
-- `hooks/creature.ts`: the flame as one SMIL-animated SVG per mood, plus a text face for the terminal.
+- `hooks/creature.ts`: the flame as one SMIL-animated SVG per mood, and the caption beside it.
 - `hooks/narrate.ts`: tool calls in plain words.
 - `types/index.d.ts`: the state contract.
 - `fx/`: the two chimes.
