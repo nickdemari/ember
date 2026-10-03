@@ -452,7 +452,12 @@ export const register: Register = on => {
     await update($, mood, was => (was.phase === 'cheer' ? feel('done', 'think') : was))
 
     // Nothing opens by itself: the mod lives in the chat (the band, the spinner line, lines
-    // of the transcript), and the pane waits for /ember.
+    // of the transcript), and the pane waits for /ember. A pane found open at a load was left
+    // by an earlier version that opened one unasked, in a session still running: close it.
+    if ((await $.ui.panes()).some(pane => pane.id === PANE)) {
+      await $.ui.close({ id: PANE }).catch(() => undefined)
+    }
+
     $.clock.every(HEARTBEAT_MS, () => {
       void tick($)
     })
